@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>シュート記録</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root{
+    --bg:#0f1216; --card:#191f26; --card2:#222a33; --line:#2c3540;
+    --fg:#eef2f6; --muted:#9aa7b4; --accent:#ff7a1a; --accent2:#3aa0ff;
+    --good:#2ec76b; --bad:#ff5b6e; --court:#c9702f;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; height:100%;}
+  body{background:var(--bg); color:var(--fg); font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; padding-bottom:70px;}
+  header{padding:14px 16px 8px; display:flex; align-items:center; gap:10px;}
+  header .who{font-size:13px; color:var(--muted);}
+  h1{font-size:17px; margin:0; font-weight:700;}
+  .wrap{padding:0 14px 20px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-top:12px;}
+  .muted{color:var(--muted); font-size:13px;}
+  .row{display:flex; align-items:center; gap:8px;}
+  .grow{flex:1;}
+  button{font:inherit; color:inherit; border:none; background:none; cursor:pointer;}
+  .btn{background:var(--accent); color:#111; font-weight:700; border-radius:10px; padding:12px 14px; text-align:center; width:100%;}
+  .btn.sub{background:var(--card2); color:var(--fg); border:1px solid var(--line);}
+  .btn:active{opacity:.8;}
+  select,input[type=number],input[type=text],input[type=date]{
+    background:var(--card2); color:var(--fg); border:1px solid var(--line);
+    border-radius:10px; padding:10px; font:inherit; width:100%;}
+  .pct{font-weight:800;}
+  .pill{display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:var(--card2); border:1px solid var(--line);}
+
+  /* コート */
+  .court-wrap{position:relative; width:100%; max-width:360px; margin:6px auto 0; aspect-ratio:1/1;}
+  svg.court{width:100%; height:100%; display:block; touch-action:manipulation;}
+  .spot{position:absolute; transform:translate(-50%,-50%); text-align:center;}
+  .spot .dot{width:44px; height:44px; border-radius:50%; background:rgba(255,122,26,.9);
+    border:2px solid #fff; display:flex; align-items:center; justify-content:center;
+    font-size:11px; font-weight:800; color:#111; box-shadow:0 2px 6px rgba(0,0,0,.4);}
+  .spot .lab{margin-top:3px; font-size:11px; color:var(--fg); text-shadow:0 1px 3px #000; white-space:nowrap;}
+  .spot.small .dot{width:34px;height:34px;font-size:10px;}
+
+  /* タブバー */
+  nav{position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--card);
+    border-top:1px solid var(--line); padding:6px 4px calc(6px + env(safe-area-inset-bottom));}
+  nav button{flex:1; padding:6px 0; color:var(--muted); font-size:11px; display:flex; flex-direction:column; align-items:center; gap:2px;}
+  nav button.active{color:var(--accent);}
+  nav .ic{font-size:19px;}
+
+  /* シート(モーダル) */
+  .sheet-bg{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:flex-end; z-index:20;}
+  .sheet-bg.open{display:flex;}
+  .sheet{background:var(--card); width:100%; border-radius:16px 16px 0 0; padding:16px 16px calc(20px + env(safe-area-inset-bottom)); border-top:1px solid var(--line);}
+  .stepper{display:flex; align-items:center; gap:10px;}
+  .stepper button{width:46px; height:46px; border-radius:12px; background:var(--card2); border:1px solid var(--line); font-size:22px; font-weight:800;}
+  .stepper .val{flex:1; text-align:center; font-size:30px; font-weight:800;}
+  .quick{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;}
+  .quick button{padding:8px 12px; background:var(--card2); border:1px solid var(--line); border-radius:999px; font-size:13px;}
+
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th,td{padding:7px 6px; border-bottom:1px solid var(--line); text-align:right;}
+  th:first-child,td:first-child{text-align:left;}
+  th{color:var(--muted); font-weight:600; font-size:12px;}
+  .barbg{background:var(--card2); border-radius:6px; height:8px; overflow:hidden;}
+  .bar{height:100%; background:var(--accent);}
+  .center{text-align:center;}
+  .hidden{display:none;}
+  .toast{position:fixed; left:50%; bottom:84px; transform:translateX(-50%); background:#000; color:#fff; padding:10px 16px; border-radius:999px; font-size:13px; opacity:0; transition:opacity .2s; z-index:40; pointer-events:none;}
+  .toast.show{opacity:.95;}
+  .listitem{display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-bottom:1px solid var(--line);}
+</style>
+</head>
+<body>
+<header>
+  <div class="grow"><h1 id="title">🏀 シュート記録</h1><div class="who" id="who">読み込み中…</div></div>
+  <select id="ymSel" style="width:130px"></select>
+</header>
+
+<div class="wrap">
+  <!-- ===== 記録タブ ===== -->
+  <section id="tab-record">
+    <div class="card">
+      <div class="muted">スポットをタップして記録（この画面の集計は選択中の月）</div>
+      <div class="court-wrap" id="courtWrap">
+        <svg class="court" viewBox="0 0 100 100" id="courtSvg"></svg>
+        <!-- スポットは JS で配置 -->
+      </div>
+    </div>
+    <div class="card">
+      <div class="row"><b class="grow">最近の記録</b><span class="muted" id="histCount"></span></div>
+      <div id="historyList"></div>
+    </div>
+  </section>
+
+  <!-- ===== マイタブ ===== -->
+  <section id="tab-my" class="hidden">
+    <div class="card">
+      <div class="row"><b class="grow">マイスタッツ</b><span class="pill" id="myTotal"></span></div>
+      <div id="myStats"></div>
+    </div>
+  </section>
+
+  <!-- ===== チームタブ ===== -->
+  <section id="tab-team" class="hidden">
+    <div class="card">
+      <div class="row"><b class="grow">チーム一覧</b></div>
+      <div class="muted" style="margin:6px 0">スポットを選ぶとランキング表示</div>
+      <select id="teamSpotSel"></select>
+      <div id="teamBody" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ===== 推移タブ ===== -->
+  <section id="tab-trend" class="hidden">
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <select id="trendSpotSel" class="grow"></select>
+        <select id="trendWho" style="width:110px">
+          <option value="me">自分</option>
+          <option value="team">チーム</option>
+        </select>
+      </div>
+      <canvas id="trendChart" height="220" style="margin-top:12px"></canvas>
+      <div id="trendTable" style="margin-top:8px"></div>
+    </div>
+  </section>
+
+  <!-- ===== 設定タブ ===== -->
+  <section id="tab-settings" class="hidden">
+    <div class="card">
+      <b>スポットを追加</b>
+      <div class="muted" style="margin:6px 0">下のコートをタップして位置を決め、名前を入力</div>
+      <div class="court-wrap" id="editCourtWrap">
+        <svg class="court" viewBox="0 0 100 100" id="editCourtSvg"></svg>
+      </div>
+      <div class="row" style="margin-top:10px; gap:8px">
+        <input type="text" id="newSpotName" placeholder="例: ミドル右45°" class="grow"/>
+        <button class="btn" style="width:auto; padding:12px 16px" id="addSpotBtn">追加</button>
+      </div>
+    </div>
+    <div class="card">
+      <b>スポット一覧</b>
+      <div id="spotList" style="margin-top:8px"></div>
+    </div>
+  </section>
+</div>
+
+<!-- タブバー -->
+<nav>
+  <button data-tab="record" class="active"><span class="ic">🏀</span>記録</button>
+  <button data-tab="my"><span class="ic">📊</span>マイ</button>
+  <button data-tab="team"><span class="ic">👥</span>チーム</button>
+  <button data-tab="trend"><span class="ic">📈</span>推移</button>
+  <button data-tab="settings"><span class="ic">⚙️</span>設定</button>
+</nav>
+
+<!-- 記録入力シート -->
+<div class="sheet-bg" id="recSheetBg">
+  <div class="sheet">
+    <div class="row"><b class="grow" id="recSpotName">スポット</b>
+      <button class="muted" id="recClose" style="font-size:22px">✕</button></div>
+    <div style="margin-top:12px">
+      <div class="muted">試投数（打った数）</div>
+      <div class="stepper" style="margin-top:6px">
+        <button data-t="attempts" data-d="-1">−</button>
+        <div class="val" id="valAttempts">10</div>
+        <button data-t="attempts" data-d="1">＋</button>
+      </div>
+      <div class="quick" id="quickAttempts"></div>
+    </div>
+    <div style="margin-top:14px">
+      <div class="muted">メイク数（決めた数）</div>
+      <div class="stepper" style="margin-top:6px">
+        <button data-t="makes" data-d="-1">−</button>
+        <div class="val" id="valMakes">5</div>
+        <button data-t="makes" data-d="1">＋</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px; gap:8px">
+      <div class="grow">
+        <div class="muted">日付</div>
+        <input type="date" id="recDate"/>
+      </div>
+      <div class="center">
+        <div class="muted">確率</div>
+        <div class="pct" id="recPct" style="font-size:26px">50.0%</div>
+      </div>
+    </div>
+    <button class="btn" id="recSave" style="margin-top:16px">保存する</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ====== 設定: ここを自分の値に置き換える ==========================
+var LIFF_ID = 'YOUR_LIFF_ID';                 // LINE Developers の LIFF ID
+var GAS_URL = 'https://script.google.com/macros/s/AKfycbzPTkVAbbZZqNdctGd8bi-GVE2MGaTbhLpmOQCqHZ2vyjO4q3ngSM96mB2jZoFmPFpw/exec';          // GASウェブアプリの /exec URL
+var API_TOKEN = '';                           // GAS側 API_TOKEN と一致(未使用なら空)
+// ================================================================
+
+var state = {
+  user: { userId: '', displayName: '' },
+  spots: [],
+  ym: '',            // 選択中の月(YYYY-MM)。'' は全期間
+  myStats: null,
+  editPos: null,     // 追加スポットの選択位置 {x,y}
+  chart: null,
+  current: null      // 記録中スポット
+};
+
+// ---- API ----
+async function api(action, payload){
+  var res = await fetch(GAS_URL, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify(Object.assign({action:action, token:API_TOKEN}, payload||{}))
+  });
+  var j = await res.json();
+  if(!j.ok) throw new Error(j.error||'エラー');
+  return j.data;
+}
+
+// ---- 起動 ----
+(async function(){
+  try{
+    await liff.init({ liffId: LIFF_ID });
+    if(!liff.isLoggedIn()){ liff.login(); return; }
+    var p = await liff.getProfile();
+    state.user = { userId: p.userId, displayName: p.displayName };
+  }catch(e){
+    // LINE外(PCブラウザ)での動作確認用フォールバック
+    console.warn('LIFF init 失敗。テストモードで起動:', e);
+    var dev = localStorage.getItem('devUser');
+    if(!dev){ dev = 'dev-' + Math.random().toString(36).slice(2,8); localStorage.setItem('devUser', dev); }
+    state.user = { userId: dev, displayName: 'テスト:'+dev.slice(-4) };
+  }
+  document.getElementById('who').textContent = state.user.displayName + ' さん';
+  await boot();
+})();
+
+async function boot(){
+  var d = await api('init', {});
+  state.spots = d.spots;
+  buildYmOptions(d.ym);
+  state.ym = d.ym;
+  document.getElementById('ymSel').value = d.ym;
+  renderCourt();
+  renderEditCourt();
+  fillSpotSelectors();
+  await refreshAll();
+}
+
+// ---- 月セレクタ ----
+function buildYmOptions(currentYm){
+  var sel = document.getElementById('ymSel');
+  sel.innerHTML='';
+  var opts=[{v:'', t:'全期間'}];
+  var parts = currentYm.split('-'); var y=+parts[0], m=+parts[1];
+  for(var i=0;i<12;i++){
+    var ym = (y + '-' + ('0'+m).slice(-2));
+    opts.push({v:ym, t:y+'年'+m+'月'});
+    m--; if(m<1){m=12;y--;}
+  }
+  opts.forEach(function(o){ var el=document.createElement('option'); el.value=o.v; el.textContent=o.t; sel.appendChild(el); });
+}
+document.getElementById('ymSel').addEventListener('change', async function(e){
+  state.ym = e.target.value; await refreshAll();
+});
+
+async function refreshAll(){
+  await Promise.all([ loadMyStats(), loadHistory() ]);
+  renderCourt();     // マイ確率をコートに反映
+  var active = document.querySelector('nav button.active').dataset.tab;
+  if(active==='team') loadTeam();
+  if(active==='trend') loadTrend();
+  if(active==='settings') renderSpotList();
+}
+
+// ================= コート描画 =================
+function courtSvgMarkup(){
+  // basket 上部中央。ざっくりしたハーフコート。
+  return ''
+   + '<rect x="2" y="2" width="96" height="96" rx="2" fill="none" stroke="#4a5763" stroke-width="0.8"/>'
+   + '<rect x="38" y="2" width="24" height="34" fill="none" stroke="#4a5763" stroke-width="0.8"/>'      // ペイント
+   + '<circle cx="50" cy="36" r="9" fill="none" stroke="#4a5763" stroke-width="0.8"/>'                  // FTサークル
+   + '<line x1="42" y1="7" x2="58" y2="7" stroke="#e0e0e0" stroke-width="1.2"/>'                        // バックボード
+   + '<circle cx="50" cy="10.5" r="2.4" fill="none" stroke="var(--accent)" stroke-width="1"/>'          // リング
+   + '<path d="M 8,2 L 8,16 A 42,42 0 0 0 92,16 L 92,2" fill="none" stroke="#6b7885" stroke-width="0.9"/>'; // 3Pライン
+}
+function renderCourt(){
+  document.getElementById('courtSvg').innerHTML = courtSvgMarkup();
+  var wrap = document.getElementById('courtWrap');
+  // 既存スポットDOM削除
+  Array.prototype.slice.call(wrap.querySelectorAll('.spot')).forEach(function(n){n.remove();});
+  var my = {}; if(state.myStats){ state.myStats.spots.forEach(function(s){ my[s.spotId]=s; }); }
+  state.spots.forEach(function(sp){
+    var st = my[sp.id];
+    var el = document.createElement('div');
+    el.className='spot';
+    el.style.left = sp.x + '%'; el.style.top = sp.y + '%';
+    var label = st && st.attempts>0 ? (st.makes+'/'+st.attempts) : '記録';
+    el.innerHTML = '<div class="dot">'+label+'</div><div class="lab">'+esc(sp.name)+
+      (st && st.attempts>0 ? ' <b>'+st.pct+'%</b>':'')+'</div>';
+    el.addEventListener('click', function(){ openRecord(sp); });
+    wrap.appendChild(el);
+  });
+}
+function renderEditCourt(){
+  document.getElementById('editCourtSvg').innerHTML = courtSvgMarkup();
+  var wrap = document.getElementById('editCourtWrap');
+  Array.prototype.slice.call(wrap.querySelectorAll('.spot')).forEach(function(n){n.remove();});
+  // 既存スポットを薄く表示
+  state.spots.forEach(function(sp){
+    var el=document.createElement('div'); el.className='spot small';
+    el.style.left=sp.x+'%'; el.style.top=sp.y+'%'; el.style.opacity='.5';
+    el.innerHTML='<div class="dot">•</div>';
+    wrap.appendChild(el);
+  });
+  // 追加位置マーカー
+  if(state.editPos){
+    var m=document.createElement('div'); m.className='spot'; m.id='editMarker';
+    m.style.left=state.editPos.x+'%'; m.style.top=state.editPos.y+'%';
+    m.innerHTML='<div class="dot" style="background:var(--accent2)">＋</div>';
+    wrap.appendChild(m);
+  }
+  wrap.querySelector('svg').onclick = function(ev){
+    var r = wrap.getBoundingClientRect();
+    var x = Math.round(((ev.clientX-r.left)/r.width)*100);
+    var y = Math.round(((ev.clientY-r.top)/r.height)*100);
+    state.editPos = {x:Math.max(3,Math.min(97,x)), y:Math.max(3,Math.min(97,y))};
+    renderEditCourt();
+  };
+}
+
+// ================= 記録入力 =================
+var rec = { makes:5, attempts:10 };
+function openRecord(sp){
+  state.current = sp;
+  rec = { makes:5, attempts:10 };
+  document.getElementById('recSpotName').textContent = '🏀 '+sp.name;
+  document.getElementById('recDate').value = todayStr();
+  renderQuick();
+  syncRecUI();
+  document.getElementById('recSheetBg').classList.add('open');
+}
+function closeRecord(){ document.getElementById('recSheetBg').classList.remove('open'); }
+function syncRecUI(){
+  if(rec.attempts<1) rec.attempts=1;
+  if(rec.makes<0) rec.makes=0;
+  if(rec.makes>rec.attempts) rec.makes=rec.attempts;
+  document.getElementById('valMakes').textContent = rec.makes;
+  document.getElementById('valAttempts').textContent = rec.attempts;
+  var p = rec.attempts>0 ? Math.round(rec.makes/rec.attempts*1000)/10 : 0;
+  document.getElementById('recPct').textContent = p.toFixed(1)+'%';
+}
+function renderQuick(){
+  var q=document.getElementById('quickAttempts'); q.innerHTML='';
+  [5,10,15,20,25].forEach(function(n){
+    var b=document.createElement('button'); b.textContent=n+'本';
+    b.onclick=function(){ rec.attempts=n; if(rec.makes>n) rec.makes=n; syncRecUI(); };
+    q.appendChild(b);
+  });
+}
+document.querySelectorAll('.stepper button').forEach(function(b){
+  b.addEventListener('click', function(){
+    rec[b.dataset.t] += parseInt(b.dataset.d,10); syncRecUI();
+  });
+});
+document.getElementById('recClose').onclick = closeRecord;
+document.getElementById('recSheetBg').addEventListener('click', function(e){ if(e.target.id==='recSheetBg') closeRecord(); });
+document.getElementById('recSave').onclick = async function(){
+  try{
+    this.disabled=true;
+    await api('recordShot', {
+      userId: state.user.userId, displayName: state.user.displayName,
+      spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
+      date: document.getElementById('recDate').value
+    });
+    closeRecord();
+    toast('保存しました ✅');
+    await refreshAll();
+  }catch(e){ toast('エラー: '+e.message); }
+  finally{ this.disabled=false; }
+};
+
+// ================= マイ =================
+async function loadMyStats(){
+  state.myStats = await api('getMyStats', { userId: state.user.userId, ym: state.ym });
+  var t = state.myStats.total;
+  document.getElementById('myTotal').textContent = '合計 '+t.makes+'/'+t.attempts+' ('+t.pct+'%)';
+  var host = document.getElementById('myStats'); host.innerHTML='';
+  state.myStats.spots.forEach(function(s){
+    var div=document.createElement('div'); div.style.margin='10px 0';
+    div.innerHTML =
+      '<div class="row"><span class="grow">'+esc(s.name)+'</span>'
+      +'<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
+      +'<b class="pct">'+s.pct+'%</b></div>'
+      +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
+    host.appendChild(div);
+  });
+}
+
+// ================= 履歴 =================
+async function loadHistory(){
+  var d = await api('getHistory', { userId: state.user.userId, limit: 20 });
+  var host=document.getElementById('historyList'); host.innerHTML='';
+  document.getElementById('histCount').textContent = d.items.length? '':'まだありません';
+  d.items.forEach(function(it){
+    var el=document.createElement('div'); el.className='listitem';
+    el.innerHTML='<span>'+esc(it.spot)+' <span class="muted" style="font-size:12px">'+it.date+'</span></span>'
+      +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span></span>';
+    host.appendChild(el);
+  });
+}
+
+// ================= チーム =================
+function fillSpotSelectors(){
+  ['teamSpotSel','trendSpotSel'].forEach(function(id){
+    var sel=document.getElementById(id); var prev=sel.value; sel.innerHTML='';
+    if(id==='teamSpotSel'){ var all=document.createElement('option'); all.value=''; all.textContent='合計(全スポット)'; sel.appendChild(all); }
+    state.spots.forEach(function(sp){ var o=document.createElement('option'); o.value=sp.id; o.textContent=sp.name; sel.appendChild(o); });
+    if(prev) sel.value=prev;
+  });
+}
+document.getElementById('teamSpotSel').addEventListener('change', loadTeam);
+async function loadTeam(){
+  var spotId = document.getElementById('teamSpotSel').value;
+  var d = await api('getTeamStats', { ym: state.ym });
+  var rows = d.users.map(function(u){
+    if(spotId){ var s=u.spots.find(function(x){return x.spotId===spotId;})||{makes:0,attempts:0,pct:0};
+      return { name:u.name, makes:s.makes, attempts:s.attempts, pct:s.pct }; }
+    return { name:u.name, makes:u.total.makes, attempts:u.total.attempts, pct:u.total.pct };
+  }).filter(function(r){ return r.attempts>0; });
+  rows.sort(function(a,b){ return b.pct-a.pct; });
+  var host=document.getElementById('teamBody');
+  if(!rows.length){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
+  var html='<table><thead><tr><th>#</th><th>選手</th><th>本数</th><th>確率</th></tr></thead><tbody>';
+  rows.forEach(function(r,i){
+    var medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
+    html+='<tr><td>'+medal+'</td><td>'+esc(r.name)+'</td><td>'+r.makes+'/'+r.attempts+'</td><td><b>'+r.pct+'%</b></td></tr>';
+  });
+  html+='</tbody></table>';
+  host.innerHTML=html;
+}
+
+// ================= 推移 =================
+document.getElementById('trendSpotSel').addEventListener('change', loadTrend);
+document.getElementById('trendWho').addEventListener('change', loadTrend);
+async function loadTrend(){
+  var spotId=document.getElementById('trendSpotSel').value;
+  if(!spotId) return;
+  var who=document.getElementById('trendWho').value;
+  var d = await api('getTrend', { spotId: spotId, userId: who==='me'? state.user.userId : '' });
+  var labels=d.points.map(function(p){ return p.ym.slice(2).replace('-','/'); });
+  var data=d.points.map(function(p){ return p.pct; });
+  if(state.chart) state.chart.destroy();
+  var ctx=document.getElementById('trendChart');
+  state.chart=new Chart(ctx,{
+    type:'line',
+    data:{ labels:labels, datasets:[{ label:'確率(%)', data:data,
+      borderColor:'#ff7a1a', backgroundColor:'rgba(255,122,26,.15)', fill:true, tension:.3,
+      pointRadius:4, pointBackgroundColor:'#ff7a1a' }]},
+    options:{ responsive:true, plugins:{legend:{display:false}},
+      scales:{ y:{min:0,max:100, ticks:{color:'#9aa7b4'}, grid:{color:'#2c3540'}},
+               x:{ticks:{color:'#9aa7b4'}, grid:{display:false}} } }
+  });
+  var host=document.getElementById('trendTable');
+  if(!d.points.length){ host.innerHTML='<div class="muted center" style="padding:10px">記録がありません</div>'; return; }
+  var prev=null, html='<table><thead><tr><th>月</th><th>本数</th><th>確率</th><th>前月比</th></tr></thead><tbody>';
+  d.points.forEach(function(p){
+    var diff = prev===null? '—' : ((p.pct-prev>=0?'+':'')+(Math.round((p.pct-prev)*10)/10)+'pt');
+    var col = prev===null? 'var(--muted)' : (p.pct-prev>=0?'var(--good)':'var(--bad)');
+    html+='<tr><td>'+p.ym.replace('-','/')+'</td><td>'+p.makes+'/'+p.attempts+'</td><td><b>'+p.pct+'%</b></td><td style="color:'+col+'">'+diff+'</td></tr>';
+    prev=p.pct;
+  });
+  html+='</tbody></table>'; host.innerHTML=html;
+}
+
+// ================= 設定(スポット) =================
+document.getElementById('addSpotBtn').onclick = async function(){
+  var name=document.getElementById('newSpotName').value.trim();
+  if(!name){ toast('名前を入力してください'); return; }
+  var pos = state.editPos || {x:50,y:80};
+  try{
+    this.disabled=true;
+    var d = await api('addSpot', { name:name, x:pos.x, y:pos.y });
+    state.spots = d.spots; state.editPos=null;
+    document.getElementById('newSpotName').value='';
+    renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList();
+    toast('スポットを追加しました ✅');
+  }catch(e){ toast('エラー: '+e.message); }
+  finally{ this.disabled=false; }
+};
+function renderSpotList(){
+  var host=document.getElementById('spotList'); host.innerHTML='';
+  state.spots.forEach(function(sp){
+    var el=document.createElement('div'); el.className='listitem';
+    el.innerHTML='<span>'+esc(sp.name)+'</span>';
+    var del=document.createElement('button'); del.textContent='削除'; del.className='muted';
+    del.onclick=async function(){
+      if(!confirm(sp.name+' を削除しますか？(過去の記録は残ります)')) return;
+      try{ var d=await api('deleteSpot',{spotId:sp.id}); state.spots=d.spots;
+        renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList(); toast('削除しました'); }
+      catch(e){ toast('エラー: '+e.message); }
+    };
+    el.appendChild(del); host.appendChild(el);
+  });
+}
+
+// ================= タブ切替 =================
+document.querySelectorAll('nav button').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('nav button').forEach(function(x){x.classList.remove('active');});
+    b.classList.add('active');
+    var tab=b.dataset.tab;
+    ['record','my','team','trend','settings'].forEach(function(t){
+      document.getElementById('tab-'+t).classList.toggle('hidden', t!==tab);
+    });
+    if(tab==='team') loadTeam();
+    if(tab==='trend') loadTrend();
+    if(tab==='settings'){ renderEditCourt(); renderSpotList(); }
+    if(tab==='my') loadMyStats();
+  });
+});
+
+// ================= 小物 =================
+function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+var toastTimer;
+function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show');},1800); }
+</script>
+</body>
+</html>
