@@ -14,7 +14,7 @@
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; height:100%;}
-  body{background:var(--bg); color:var(--fg); font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; padding-bottom:70px;}
+  body{background:var(--bg); color:var(--fg); font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; padding-bottom:calc(78px + env(safe-area-inset-bottom));}
   header{padding:14px 16px 8px; display:flex; align-items:center; gap:10px;}
   header .who{font-size:13px; color:var(--muted);}
   h1{font-size:17px; margin:0; font-weight:700;}
@@ -131,6 +131,14 @@
   <!-- ===== 設定タブ ===== -->
   <section id="tab-settings" class="hidden">
     <div class="card">
+      <b>表示名の変更</b>
+      <div class="muted" style="margin:6px 0">チーム内でのあなたの表示名です</div>
+      <div class="row" style="gap:8px">
+        <input type="text" id="displayNameInput" class="grow" maxlength="20"/>
+        <button class="btn" style="width:auto; padding:12px 16px" id="saveNameBtn">保存</button>
+      </div>
+    </div>
+    <div class="card">
       <b>スポットを追加</b>
       <div class="muted" style="margin:6px 0">下のコートをタップして位置を決め、名前を入力</div>
       <div class="court-wrap" id="editCourtWrap">
@@ -190,6 +198,7 @@
       </div>
     </div>
     <button class="btn" id="recSave" style="margin-top:16px">保存する</button>
+    <button class="btn sub hidden" id="recDeleteBtn" style="margin-top:10px; color:var(--bad); border-color:var(--bad)">この記録を削除</button>
   </div>
 </div>
 
@@ -209,8 +218,29 @@ var state = {
   myStats: null,
   editPos: null,     // 追加スポットの選択位置 {x,y}
   chart: null,
-  current: null      // 記録中スポット
+  current: null,     // 記録中スポット
+  editingShotId: null // 編集中の記録ID(nullなら新規記録)
 };
+
+// LINEアプリ内WebViewは、画面表示直後の1回目のタップが click として発火しない事があるため、
+// touchend で即座に反応させる(移動を伴う場合はスクロールとみなし無視)。
+function onTap(el, handler){
+  var sx, sy, moved = false;
+  el.addEventListener('touchstart', function(e){
+    moved = false;
+    var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
+  }, { passive: true });
+  el.addEventListener('touchmove', function(e){
+    var t = e.touches[0];
+    if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true;
+  }, { passive: true });
+  el.addEventListener('touchend', function(e){
+    if (moved) return;
+    e.preventDefault();
+    handler(e);
+  }, { passive: false });
+  el.addEventListener('click', handler);
+}
 
 // ---- API ----
 async function api(action, payload){
@@ -238,7 +268,10 @@ async function api(action, payload){
     if(!dev){ dev = 'dev-' + Math.random().toString(36).slice(2,8); localStorage.setItem('devUser', dev); }
     state.user = { userId: dev, displayName: 'テスト:'+dev.slice(-4) };
   }
+  var nameOverride = localStorage.getItem('displayNameOverride_' + state.user.userId);
+  if(nameOverride) state.user.displayName = nameOverride;
   document.getElementById('who').textContent = state.user.displayName + ' さん';
+  document.getElementById('displayNameInput').value = state.user.displayName;
   await boot();
 })();
 
@@ -305,7 +338,7 @@ function renderCourt(){
     var label = st && st.attempts>0 ? (st.makes+'/'+st.attempts) : '記録';
     el.innerHTML = '<div class="dot">'+label+'</div><div class="lab">'+esc(sp.name)+
       (st && st.attempts>0 ? ' <b>'+st.pct+'%</b>':'')+'</div>';
-    el.addEventListener('click', function(){ openRecord(sp); });
+    onTap(el, function(){ openRecord(sp); });
     wrap.appendChild(el);
   });
 }
@@ -340,9 +373,22 @@ function renderEditCourt(){
 var rec = { makes:5, attempts:10 };
 function openRecord(sp){
   state.current = sp;
+  state.editingShotId = null;
   rec = { makes:5, attempts:10 };
   document.getElementById('recSpotName').textContent = '🏀 '+sp.name;
   document.getElementById('recDate').value = todayStr();
+  document.getElementById('recDeleteBtn').classList.add('hidden');
+  renderQuick();
+  syncRecUI();
+  document.getElementById('recSheetBg').classList.add('open');
+}
+function openEditShot(item){
+  state.current = { id: item.spotId, name: item.spot };
+  state.editingShotId = item.id;
+  rec = { makes: item.makes, attempts: item.attempts };
+  document.getElementById('recSpotName').textContent = '✏️ '+item.spot+'(編集)';
+  document.getElementById('recDate').value = item.date;
+  document.getElementById('recDeleteBtn').classList.remove('hidden');
   renderQuick();
   syncRecUI();
   document.getElementById('recSheetBg').classList.add('open');
@@ -361,31 +407,53 @@ function renderQuick(){
   var q=document.getElementById('quickAttempts'); q.innerHTML='';
   [5,10,15,20,25].forEach(function(n){
     var b=document.createElement('button'); b.textContent=n+'本';
-    b.onclick=function(){ rec.attempts=n; if(rec.makes>n) rec.makes=n; syncRecUI(); };
+    onTap(b, function(){ rec.attempts=n; if(rec.makes>n) rec.makes=n; syncRecUI(); });
     q.appendChild(b);
   });
 }
 document.querySelectorAll('.stepper button').forEach(function(b){
-  b.addEventListener('click', function(){
+  onTap(b, function(){
     rec[b.dataset.t] += parseInt(b.dataset.d,10); syncRecUI();
   });
 });
-document.getElementById('recClose').onclick = closeRecord;
+onTap(document.getElementById('recClose'), closeRecord);
 document.getElementById('recSheetBg').addEventListener('click', function(e){ if(e.target.id==='recSheetBg') closeRecord(); });
-document.getElementById('recSave').onclick = async function(){
+onTap(document.getElementById('recSave'), async function(){
+  var btn = document.getElementById('recSave');
   try{
-    this.disabled=true;
-    await api('recordShot', {
-      userId: state.user.userId, displayName: state.user.displayName,
-      spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
-      date: document.getElementById('recDate').value
-    });
+    btn.disabled=true;
+    if(state.editingShotId){
+      await api('updateShot', {
+        shotId: state.editingShotId, userId: state.user.userId,
+        makes: rec.makes, attempts: rec.attempts,
+        date: document.getElementById('recDate').value
+      });
+      toast('更新しました ✅');
+    }else{
+      await api('recordShot', {
+        userId: state.user.userId, displayName: state.user.displayName,
+        spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
+        date: document.getElementById('recDate').value
+      });
+      toast('保存しました ✅');
+    }
     closeRecord();
-    toast('保存しました ✅');
     await refreshAll();
   }catch(e){ toast('エラー: '+e.message); }
-  finally{ this.disabled=false; }
-};
+  finally{ btn.disabled=false; }
+});
+onTap(document.getElementById('recDeleteBtn'), async function(){
+  if(!confirm('この記録を削除しますか？')) return;
+  var btn = document.getElementById('recDeleteBtn');
+  try{
+    btn.disabled=true;
+    await api('deleteShot', { shotId: state.editingShotId, userId: state.user.userId });
+    closeRecord();
+    toast('削除しました');
+    await refreshAll();
+  }catch(e){ toast('エラー: '+e.message); }
+  finally{ btn.disabled=false; }
+});
 
 // ================= マイ =================
 async function loadMyStats(){
@@ -410,9 +478,10 @@ async function loadHistory(){
   var host=document.getElementById('historyList'); host.innerHTML='';
   document.getElementById('histCount').textContent = d.items.length? '':'まだありません';
   d.items.forEach(function(it){
-    var el=document.createElement('div'); el.className='listitem';
+    var el=document.createElement('div'); el.className='listitem'; el.style.cursor='pointer';
     el.innerHTML='<span>'+esc(it.spot)+' <span class="muted" style="font-size:12px">'+it.date+'</span></span>'
-      +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span></span>';
+      +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span> <span class="muted">›</span></span>';
+    onTap(el, function(){ openEditShot(it); });
     host.appendChild(el);
   });
 }
@@ -480,40 +549,57 @@ async function loadTrend(){
   html+='</tbody></table>'; host.innerHTML=html;
 }
 
+// ================= 設定(表示名) =================
+onTap(document.getElementById('saveNameBtn'), async function(){
+  var name = document.getElementById('displayNameInput').value.trim();
+  if(!name){ toast('表示名を入力してください'); return; }
+  var btn = document.getElementById('saveNameBtn');
+  try{
+    btn.disabled=true;
+    await api('renameUser', { userId: state.user.userId, displayName: name });
+    state.user.displayName = name;
+    localStorage.setItem('displayNameOverride_' + state.user.userId, name);
+    document.getElementById('who').textContent = name + ' さん';
+    toast('表示名を変更しました ✅');
+  }catch(e){ toast('エラー: '+e.message); }
+  finally{ btn.disabled=false; }
+});
+
 // ================= 設定(スポット) =================
-document.getElementById('addSpotBtn').onclick = async function(){
+onTap(document.getElementById('addSpotBtn'), async function(){
+  var btn = document.getElementById('addSpotBtn');
   var name=document.getElementById('newSpotName').value.trim();
   if(!name){ toast('名前を入力してください'); return; }
   var pos = state.editPos || {x:50,y:80};
   try{
-    this.disabled=true;
+    btn.disabled=true;
     var d = await api('addSpot', { name:name, x:pos.x, y:pos.y });
     state.spots = d.spots; state.editPos=null;
     document.getElementById('newSpotName').value='';
     renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList();
     toast('スポットを追加しました ✅');
   }catch(e){ toast('エラー: '+e.message); }
-  finally{ this.disabled=false; }
-};
+  finally{ btn.disabled=false; }
+});
 function renderSpotList(){
   var host=document.getElementById('spotList'); host.innerHTML='';
   state.spots.forEach(function(sp){
     var el=document.createElement('div'); el.className='listitem';
     el.innerHTML='<span>'+esc(sp.name)+'</span>';
     var del=document.createElement('button'); del.textContent='削除'; del.className='muted';
-    del.onclick=async function(){
+    onTap(del, async function(){
       if(!confirm(sp.name+' を削除しますか？(過去の記録は残ります)')) return;
       try{ var d=await api('deleteSpot',{spotId:sp.id}); state.spots=d.spots;
         renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList(); toast('削除しました'); }
       catch(e){ toast('エラー: '+e.message); }
-    };
+    });
     el.appendChild(del); host.appendChild(el);
   });
 }
 
 // ================= タブ切替 =================
 document.querySelectorAll('nav button').forEach(function(b){
-  b.addEventListener('click', function(){
+  onTap(b, function(){
     document.querySelectorAll('nav button').forEach(function(x){x.classList.remove('active');});
     b.classList.add('active');
     var tab=b.dataset.tab;
