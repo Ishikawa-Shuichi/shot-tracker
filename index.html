@@ -13,8 +13,8 @@
     --good:#2ec76b; --bad:#ff5b6e; --court:#c9702f;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
-  html,body{margin:0; height:100%;}
-  body{background:var(--bg); color:var(--fg); font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; padding-bottom:calc(78px + env(safe-area-inset-bottom));}
+  html,body{margin:0; min-height:100%;}
+  body{background:var(--bg); color:var(--fg); font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; padding-bottom:calc(150px + env(safe-area-inset-bottom)); -webkit-overflow-scrolling:touch;}
   header{padding:14px 16px 8px; display:flex; align-items:center; gap:10px;}
   header .who{font-size:13px; color:var(--muted);}
   h1{font-size:17px; margin:0; font-weight:700;}
