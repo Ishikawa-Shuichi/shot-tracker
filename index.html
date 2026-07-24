@@ -109,9 +109,13 @@
   <section id="tab-team" class="hidden">
     <div class="card">
       <div class="row"><b class="grow">チーム一覧</b></div>
-      <div class="muted" style="margin:6px 0">スポットを選ぶとランキング表示</div>
+      <div class="muted" style="margin:6px 0">スポット別のランキング、または選手を選んで個人成績を見られます</div>
       <select id="teamSpotSel"></select>
+      <select id="teamUserSel" style="margin-top:8px">
+        <option value="">▼ ランキング表示中(選手を選ぶと個人成績)</option>
+      </select>
       <div id="teamBody" style="margin-top:10px"></div>
+      <div id="teamUserBody" style="margin-top:10px"></div>
     </div>
   </section>
 
@@ -497,10 +501,30 @@ function fillSpotSelectors(){
     if(prev) sel.value=prev;
   });
 }
-document.getElementById('teamSpotSel').addEventListener('change', loadTeam);
+document.getElementById('teamSpotSel').addEventListener('change', renderTeamView);
+document.getElementById('teamUserSel').addEventListener('change', renderTeamView);
 async function loadTeam(){
+  state.teamData = await api('getTeamStats', { ym: state.ym });
+  fillUserSelector(state.teamData.users);
+  renderTeamView();
+}
+function fillUserSelector(users){
+  var sel = document.getElementById('teamUserSel'); var prev = sel.value;
+  sel.innerHTML = '<option value="">▼ ランキング表示中(選手を選ぶと個人成績)</option>';
+  users.slice().sort(function(a,b){ return a.name.localeCompare(b.name,'ja'); }).forEach(function(u){
+    var o=document.createElement('option'); o.value=u.userId; o.textContent=u.name; sel.appendChild(o);
+  });
+  if(prev && users.some(function(u){return u.userId===prev;})) sel.value=prev;
+}
+function renderTeamView(){
+  var uid = document.getElementById('teamUserSel').value;
+  if(uid){ renderTeamUser(uid); }
+  else { renderTeamRanking(); }
+}
+function renderTeamRanking(){
+  document.getElementById('teamUserBody').innerHTML='';
+  var d = state.teamData;
   var spotId = document.getElementById('teamSpotSel').value;
-  var d = await api('getTeamStats', { ym: state.ym });
   var rows = d.users.map(function(u){
     if(spotId){ var s=u.spots.find(function(x){return x.spotId===spotId;})||{makes:0,attempts:0,pct:0};
       return { name:u.name, makes:s.makes, attempts:s.attempts, pct:s.pct }; }
@@ -516,6 +540,24 @@ async function loadTeam(){
   });
   html+='</tbody></table>';
   host.innerHTML=html;
+}
+function renderTeamUser(userId){
+  document.getElementById('teamBody').innerHTML='';
+  var d = state.teamData;
+  var u = d.users.find(function(x){ return x.userId===userId; });
+  var host = document.getElementById('teamUserBody');
+  if(!u){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
+  var spotName = {}; d.spots.forEach(function(sp){ spotName[sp.spotId]=sp.name; });
+  var html = '<div class="row"><b class="grow">'+esc(u.name)+'</b><span class="pill">合計 '+u.total.makes+'/'+u.total.attempts+' ('+u.total.pct+'%)</span></div>';
+  u.spots.forEach(function(s){
+    html += '<div style="margin:10px 0">'
+      + '<div class="row"><span class="grow">'+esc(spotName[s.spotId]||'?')+'</span>'
+      + '<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
+      + '<b class="pct">'+s.pct+'%</b></div>'
+      + '<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>'
+      + '</div>';
+  });
+  host.innerHTML = html;
 }
 
 // ================= 推移 =================
