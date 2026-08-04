@@ -1,0 +1,533 @@
+/**
+ * バスケ シュート確率記録 bot ― バックエンド (Google Apps Script)
+ * ---------------------------------------------------------------
+ * スプレッドシートをDBにした JSON API。
+ * フロント(LIFFミニアプリ)から fetch(POST, text/plain) で呼び出す。
+ *
+ * デプロイ手順は README.md を参照。
+ */
+
+// ===== 設定 =====================================================
+// 任意: 簡易トークン。空文字なら認証なし。フロントの API_TOKEN と一致させる。
+var API_TOKEN = '';
+
+// ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
+var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
+
+// シート名
+var SHEET_SPOTS = 'Spots';
+var SHEET_SHOTS = 'Shots';
+
+// 既定スポット(初回のみ自動投入)。x,y はコート図上の位置(0〜100%)。すべて共通(shared)スポット。
+var DEFAULT_SPOTS = [
+  { name: '左コーナー', x: 10, y: 18 },
+  { name: '左ウイング', x: 22, y: 50 },
+  { name: 'トップ',     x: 50, y: 68 },
+  { name: '右ウイング', x: 78, y: 50 },
+  { name: '右コーナー', x: 90, y: 18 }
+];
+
+// ===== エントリポイント =========================================
+function doGet(e) {
+  // 動作確認用
+  return json_({ ok: true, data: { status: 'alive', time: new Date().toISOString() } });
+}
+
+function doPost(e) {
+  try {
+    var body = {};
+    if (e && e.postData && e.postData.contents) {
+      body = JSON.parse(e.postData.contents);
+    }
+    if (API_TOKEN && body.token !== API_TOKEN) {
+      return json_({ ok: false, error: 'unauthorized' });
+    }
+    var action = body.action || '';
+    var data;
+    switch (action) {
+      case 'init':        data = actionInit_(body); break;
+      case 'getSpots':    data = { spots: getSpots_(String(body.userId || '')) }; break;
+      case 'addSpot':     data = actionAddSpot_(body); break;
+      case 'updateSpot':  data = actionUpdateSpot_(body); break;
+      case 'deleteSpot':  data = actionDeleteSpot_(body); break;
+      case 'recordShot':  data = actionRecordShot_(body); break;
+      case 'updateShot':  data = actionUpdateShot_(body); break;
+      case 'deleteShot':  data = actionDeleteShot_(body); break;
+      case 'renameUser':  data = actionRenameUser_(body); break;
+      case 'getMyStats':  data = actionGetMyStats_(body); break;
+      case 'getTeamStats':data = actionGetTeamStats_(body); break;
+      case 'getTrend':    data = actionGetTrend_(body); break;
+      case 'getHistory':  data = actionGetHistory_(body); break;
+      default:
+        return json_({ ok: false, error: 'unknown action: ' + action });
+    }
+    return json_({ ok: true, data: data });
+  } catch (err) {
+    return json_({ ok: false, error: String(err && err.message || err) });
+  }
+}
+
+// ===== アクション ================================================
+
+// 起動時にまとめて必要なデータを返す(往復回数を減らして高速化するため)
+function actionInit_(body) {
+  var userId = String(body.userId || '');
+  var ym = currentYm_();
+  var spots = getSpots_(userId); // 共通 + 自分の個人スポット
+  var shots = getShots_();
+  var isHost = !!userId && userId === HOST_USER_ID;
+  var result = {
+    spots: spots,
+    ym: ym,
+    serverTime: new Date().toISOString(),
+    isHost: isHost,
+    myStats: computeMyStats_(spots, shots, userId, ym),
+    history: computeHistory_(spots, shots, userId, 20)
+  };
+  if (isHost) result.members = uniqueMembers_(shots);
+  return result;
+}
+
+function actionAddSpot_(body) {
+  var name = String(body.name || '').trim();
+  if (!name) throw new Error('スポット名が空です');
+  var x = clampNum_(body.x, 0, 100, 50);
+  var y = clampNum_(body.y, 0, 100, 50);
+  var userId = String(body.userId || '');
+  if (!userId) throw new Error('userId が空です');
+  var wantsShared = String(body.scope || 'personal') === 'shared';
+  if (wantsShared && userId !== HOST_USER_ID) throw new Error('共通スポットの追加はホストのみ可能です');
+  var scope = wantsShared ? 'shared' : 'personal';
+  var ownerId = scope === 'personal' ? userId : '';
+
+  var sh = getSheet_(SHEET_SPOTS);
+  var id = Utilities.getUuid();
+  var order = sh.getLastRow(); // ヘッダ含む行数 ≒ 追加順
+  sh.appendRow([id, name, x, y, order, true, new Date().toISOString(), scope, ownerId]);
+  return { spots: getSpots_(userId) };
+}
+
+function actionUpdateSpot_(body) {
+  var id = String(body.spotId || '');
+  var userId = String(body.userId || '');
+  var sh = getSheet_(SHEET_SPOTS);
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === id) {
+      assertSpotEditable_(rows[i], userId);
+      if (body.name != null) sh.getRange(i + 1, 2).setValue(String(body.name).trim());
+      if (body.x != null)    sh.getRange(i + 1, 3).setValue(clampNum_(body.x, 0, 100, rows[i][2]));
+      if (body.y != null)    sh.getRange(i + 1, 4).setValue(clampNum_(body.y, 0, 100, rows[i][3]));
+      return { spots: getSpots_(userId) };
+    }
+  }
+  throw new Error('スポットが見つかりません');
+}
+
+function actionDeleteSpot_(body) {
+  // 論理削除(active=false)。記録は残す。
+  var id = String(body.spotId || '');
+  var userId = String(body.userId || '');
+  var sh = getSheet_(SHEET_SPOTS);
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === id) {
+      assertSpotEditable_(rows[i], userId);
+      sh.getRange(i + 1, 6).setValue(false);
+      return { spots: getSpots_(userId) };
+    }
+  }
+  throw new Error('スポットが見つかりません');
+}
+
+// 共通スポットはホストのみ、個人スポットは持ち主(またはホスト)のみ編集・削除できる
+function assertSpotEditable_(row, userId) {
+  var scope = row[7] ? String(row[7]) : 'shared';
+  var ownerId = row[8] ? String(row[8]) : '';
+  if (userId === HOST_USER_ID) return;
+  if (scope === 'shared') throw new Error('共通スポットの編集・削除はホストのみ可能です');
+  if (ownerId !== userId) throw new Error('このスポットを編集・削除する権限がありません');
+}
+
+function actionRecordShot_(body) {
+  // actingUserId: 実際にLIFFを操作している人(=ホストなら代理記録が可能)
+  // userId: この記録の持ち主(通常はactingUserIdと同じ。ホストの代理記録時のみ別人)
+  var actingUserId = String(body.actingUserId || body.userId || '').trim();
+  var userId = String(body.userId || '').trim();
+  var displayName = String(body.displayName || '名無し').trim();
+  if (!actingUserId) throw new Error('userId が空です');
+  if (userId !== actingUserId && actingUserId !== HOST_USER_ID) {
+    throw new Error('他の人の記録を追加する権限がありません');
+  }
+  var spotId = String(body.spotId || '').trim();
+  var makes = Math.max(0, Math.floor(Number(body.makes)));
+  var attempts = Math.max(0, Math.floor(Number(body.attempts)));
+  if (!userId) throw new Error('userId が空です');
+  if (!spotId) throw new Error('スポット未選択です');
+  if (!(attempts > 0)) throw new Error('試投数は1以上にしてください');
+  if (makes > attempts) throw new Error('メイク数が試投数を超えています');
+
+  // 記録日: body.date(YYYY-MM-DD)があれば採用、なければ今日
+  var dateStr = String(body.date || '').trim();
+  var d = dateStr ? new Date(dateStr + 'T00:00:00') : new Date();
+  var ym = ymOf_(d);
+
+  var sh = getSheet_(SHEET_SHOTS);
+  var id = Utilities.getUuid();
+  sh.appendRow([
+    id, new Date().toISOString(), ym, dateOf_(d),
+    userId, displayName, spotId, makes, attempts
+  ]);
+
+  var spots = getSpots_(actingUserId);
+  var shots = getShots_();
+  var viewYm = String(body.viewYm || '') || null;
+  return {
+    id: id, ym: ym,
+    myStats: computeMyStats_(spots, shots, actingUserId, viewYm),
+    history: computeHistory_(spots, shots, actingUserId, 20)
+  };
+}
+
+function actionUpdateShot_(body) {
+  var id = String(body.shotId || '');
+  var actingUserId = String(body.actingUserId || body.userId || '');
+  var sh = getSheet_(SHEET_SHOTS);
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) !== id) continue;
+    var ownerId = String(rows[i][4]);
+    if (ownerId !== actingUserId && actingUserId !== HOST_USER_ID) throw new Error('この記録を編集する権限がありません');
+
+    var makes = body.makes != null ? Math.max(0, Math.floor(Number(body.makes))) : Number(rows[i][7]);
+    var attempts = body.attempts != null ? Math.max(0, Math.floor(Number(body.attempts))) : Number(rows[i][8]);
+    if (!(attempts > 0)) throw new Error('試投数は1以上にしてください');
+    if (makes > attempts) throw new Error('メイク数が試投数を超えています');
+
+    if (body.date) {
+      var d = new Date(String(body.date) + 'T00:00:00');
+      sh.getRange(i + 1, 3).setValue(ymOf_(d));
+      sh.getRange(i + 1, 4).setValue(dateOf_(d));
+    }
+    sh.getRange(i + 1, 8).setValue(makes);
+    sh.getRange(i + 1, 9).setValue(attempts);
+
+    var spots = getSpots_(actingUserId);
+    var shots = getShots_();
+    var viewYm = String(body.viewYm || '') || null;
+    return {
+      id: id,
+      myStats: computeMyStats_(spots, shots, actingUserId, viewYm),
+      history: computeHistory_(spots, shots, actingUserId, 20)
+    };
+  }
+  throw new Error('記録が見つかりません');
+}
+
+function actionDeleteShot_(body) {
+  var id = String(body.shotId || '');
+  var actingUserId = String(body.actingUserId || body.userId || '');
+  var sh = getSheet_(SHEET_SHOTS);
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) !== id) continue;
+    var ownerId = String(rows[i][4]);
+    if (ownerId !== actingUserId && actingUserId !== HOST_USER_ID) throw new Error('この記録を削除する権限がありません');
+    sh.deleteRow(i + 1);
+
+    var spots = getSpots_(actingUserId);
+    var shots = getShots_();
+    var viewYm = String(body.viewYm || '') || null;
+    return {
+      id: id,
+      myStats: computeMyStats_(spots, shots, actingUserId, viewYm),
+      history: computeHistory_(spots, shots, actingUserId, 20)
+    };
+  }
+  throw new Error('記録が見つかりません');
+}
+
+function actionRenameUser_(body) {
+  var userId = String(body.userId || '');
+  var newName = String(body.displayName || '').trim();
+  if (!userId) throw new Error('userId が空です');
+  if (!newName) throw new Error('表示名が空です');
+  var sh = getSheet_(SHEET_SHOTS);
+  var rows = sh.getDataRange().getValues();
+  var updated = 0;
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][4]) === userId) {
+      sh.getRange(i + 1, 6).setValue(newName);
+      updated++;
+    }
+  }
+  return { updated: updated, displayName: newName };
+}
+
+function actionGetMyStats_(body) {
+  var userId = String(body.userId || '');
+  var ym = String(body.ym || '') || null; // 指定なしなら全期間
+  return computeMyStats_(getSpots_(userId), getShots_(), userId, ym);
+}
+
+// ホスト以外は「自分の順位」だけ、ホストは全員分(個人スポット含む)を見られる。
+// 確率ランキング・合計本数ランキング・合計メイク数ランキングの3種類。
+function actionGetTeamStats_(body) {
+  var ym = String(body.ym || '') || null;
+  var requestUserId = String(body.userId || '');
+  var isHost = !!requestUserId && requestUserId === HOST_USER_ID;
+  var spotId = String(body.spotId || ''); // '' = 合計(全スポット)
+
+  var allSpots = getSpots_(null, true); // 集計用には共通+全員の個人スポットを使う
+  var shots = getShots_();
+  var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
+  shots.forEach(function (s) {
+    if (ym && s.ym !== ym) return;
+    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0 });
+    u.name = s.displayName || u.name; // 最新表示名で上書き
+    var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
+    u.tm += s.makes; u.ta += s.attempts;
+  });
+  var allUsers = Object.keys(byUser).map(function (uid) {
+    var u = byUser[uid];
+    var spotStats = allSpots.map(function (sp) {
+      var b = u.spots[sp.id] || { makes: 0, attempts: 0 };
+      return { spotId: sp.id, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+    });
+    return { userId: u.userId, name: u.name, spots: spotStats, total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) } };
+  });
+
+  var pctRanked = allUsers.filter(function (u) { return attemptsOf_(u, spotId) > 0; })
+    .sort(function (a, b) { return pctOf_(b, spotId) - pctOf_(a, spotId); });
+  var countRanked = allUsers.filter(function (u) { return u.total.attempts > 0; })
+    .sort(function (a, b) { return b.total.attempts - a.total.attempts; });
+  var makesRanked = allUsers.filter(function (u) { return u.total.makes > 0; })
+    .sort(function (a, b) { return b.total.makes - a.total.makes; });
+
+  if (isHost) {
+    var spotsMetaAll = allSpots.map(function (s) { return { spotId: s.id, name: s.name, scope: s.scope, ownerId: s.ownerId }; });
+    return {
+      ym: ym, spots: spotsMetaAll, users: allUsers,
+      pctRanking: pctRanked.map(function (u) {
+        var s = spotStatOf_(u, spotId);
+        return { userId: u.userId, name: u.name, makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
+      }),
+      countRanking: countRanked.map(function (u) {
+        return { userId: u.userId, name: u.name, attempts: u.total.attempts };
+      }),
+      makesRanking: makesRanked.map(function (u) {
+        return { userId: u.userId, name: u.name, makes: u.total.makes };
+      })
+    };
+  }
+
+  // ホスト以外には共通スポットの名前だけ返す(個人スポットの存在を他人に見せない)
+  var spotsMetaShared = allSpots.filter(function (s) { return s.scope !== 'personal'; })
+    .map(function (s) { return { spotId: s.id, name: s.name }; });
+  return {
+    ym: ym, spots: spotsMetaShared,
+    myPctRank: findRank_(pctRanked, requestUserId, function (u) {
+      var s = spotStatOf_(u, spotId);
+      return { makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
+    }),
+    myCountRank: findRank_(countRanked, requestUserId, function (u) {
+      return { attempts: u.total.attempts };
+    }),
+    myMakesRank: findRank_(makesRanked, requestUserId, function (u) {
+      return { makes: u.total.makes };
+    })
+  };
+}
+
+function actionGetTrend_(body) {
+  // 指定スポットの推移。granularity: 'day' | 'week' | 'month'(既定)。userId 指定で個人、なければチーム合算。
+  var spotId = String(body.spotId || '');
+  var userId = String(body.userId || '') || null;
+  var granularity = String(body.granularity || 'month');
+  var shots = getShots_();
+  var byKey = {};
+  shots.forEach(function (s) {
+    if (s.spotId !== spotId) return;
+    if (userId && s.userId !== userId) return;
+    var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;
+    var b = byKey[key] || (byKey[key] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
+  });
+  var points = Object.keys(byKey).sort().map(function (key) {
+    var b = byKey[key];
+    return { key: key, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+  });
+  return { spotId: spotId, userId: userId, granularity: granularity, points: points };
+}
+
+function actionGetHistory_(body) {
+  var userId = String(body.userId || '');
+  var limit = Math.min(200, Math.max(1, Math.floor(Number(body.limit) || 50)));
+  return { items: computeHistory_(getSpots_(userId), getShots_(), userId, limit) };
+}
+
+// ===== 集計ロジック(使い回し用) ==================================
+
+function computeMyStats_(spots, shots, userId, ym) {
+  var bySpot = {};
+  shots.forEach(function (s) {
+    if (s.userId !== userId) return;
+    if (ym && s.ym !== ym) return;
+    var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
+  });
+  var stats = spots.map(function (sp) {
+    var b = bySpot[sp.id] || { makes: 0, attempts: 0 };
+    return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+  });
+  var tot = stats.reduce(function (a, s) { a.makes += s.makes; a.attempts += s.attempts; return a; }, { makes: 0, attempts: 0 });
+  return { ym: ym, spots: stats, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
+}
+
+function computeHistory_(spots, shots, userId, limit) {
+  var spotName = {}; spots.forEach(function (s) { spotName[s.id] = s.name; });
+  var mine = shots.filter(function (s) { return s.userId === userId; });
+  mine.sort(function (a, b) { return a.ts < b.ts ? 1 : -1; }); // 新しい順
+  return mine.slice(0, limit).map(function (s) {
+    return { id: s.id, date: s.date, ym: s.ym, spotId: s.spotId, spot: spotName[s.spotId] || '(削除済)', makes: s.makes, attempts: s.attempts, pct: pct_(s.makes, s.attempts) };
+  });
+}
+
+// 記録が存在する全ユーザーの一覧(ホストの代理記録の対象選択に使用)
+function uniqueMembers_(shots) {
+  var map = {}; var order = [];
+  shots.forEach(function (s) {
+    if (!(s.userId in map)) order.push(s.userId);
+    map[s.userId] = s.displayName;
+  });
+  return order.map(function (uid) { return { userId: uid, name: map[uid] }; });
+}
+
+function spotStatOf_(u, spotId) {
+  if (!spotId) return { makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
+  for (var i = 0; i < u.spots.length; i++) {
+    if (u.spots[i].spotId === spotId) return u.spots[i];
+  }
+  return { makes: 0, attempts: 0, pct: 0 };
+}
+function pctOf_(u, spotId) { return spotId ? spotStatOf_(u, spotId).pct : u.total.pct; }
+function attemptsOf_(u, spotId) { return spotId ? spotStatOf_(u, spotId).attempts : u.total.attempts; }
+
+function findRank_(rankedList, userId, extraFn) {
+  for (var i = 0; i < rankedList.length; i++) {
+    if (rankedList[i].userId === userId) {
+      var extra = extraFn(rankedList[i]);
+      var out = { rank: i + 1, total: rankedList.length };
+      for (var k in extra) out[k] = extra[k];
+      return out;
+    }
+  }
+  return null;
+}
+
+// ===== データ層 ==================================================
+
+// viewerUserId: この人から見える範囲(共通 + 自分の個人スポット)に絞る。
+// includeAllPersonal=true なら全員分の個人スポットも含める(ホストの集計・代理記録用)。
+function getSpots_(viewerUserId, includeAllPersonal) {
+  var sh = getSheet_(SHEET_SPOTS);
+  var rows = sh.getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    if (!r[0]) continue;
+    if (r[5] === false || r[5] === 'FALSE') continue; // active=false は除外
+    var scope = r[7] ? String(r[7]) : 'shared';
+    var ownerId = r[8] ? String(r[8]) : '';
+    if (scope === 'personal' && !includeAllPersonal) {
+      if (!viewerUserId || ownerId !== viewerUserId) continue; // 他人の個人スポットは見せない
+    }
+    out.push({ id: String(r[0]), name: String(r[1]), x: Number(r[2]), y: Number(r[3]), order: Number(r[4]), scope: scope, ownerId: ownerId });
+  }
+  out.sort(function (a, b) { return a.order - b.order; });
+  return out;
+}
+
+function getShots_() {
+  var sh = getSheet_(SHEET_SHOTS);
+  var rows = sh.getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    if (!r[0]) continue;
+    out.push({
+      id: String(r[0]), ts: textCell_(r[1]), ym: ymCell_(r[2]), date: dateCell_(r[3]),
+      userId: String(r[4]), displayName: String(r[5]), spotId: String(r[6]),
+      makes: Number(r[7]) || 0, attempts: Number(r[8]) || 0
+    });
+  }
+  return out;
+}
+
+// スプレッドシートが "2026-07" のような文字列を日付型に自動変換してしまうことがあるため、
+// 読み出し時に Date 型なら正しい書式へ戻す(保存済みの値がどちらの型でも安全に読める)。
+function isDateCell_(v) { return Object.prototype.toString.call(v) === '[object Date]'; }
+function textCell_(v) { return isDateCell_(v) ? v.toISOString() : String(v); }
+function ymCell_(v)   { return isDateCell_(v) ? ymOf_(v)   : String(v); }
+function dateCell_(v) { return isDateCell_(v) ? dateOf_(v) : String(v); }
+
+function getSheet_(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    if (name === SHEET_SPOTS) {
+      sh.appendRow(['id', 'name', 'x', 'y', 'order', 'active', 'createdAt', 'scope', 'ownerId']);
+      DEFAULT_SPOTS.forEach(function (s, idx) {
+        sh.appendRow([Utilities.getUuid(), s.name, s.x, s.y, idx, true, new Date().toISOString(), 'shared', '']);
+      });
+    } else if (name === SHEET_SHOTS) {
+      sh.appendRow(['id', 'timestamp', 'ym', 'date', 'userId', 'displayName', 'spotId', 'makes', 'attempts']);
+    }
+  }
+  return sh;
+}
+
+// ===== ユーティリティ ============================================
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function pct_(m, a) { return a > 0 ? Math.round((m / a) * 1000) / 10 : 0; } // 小数1桁の%
+
+function currentYm_() { return ymOf_(new Date()); }
+
+function ymOf_(d) {
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+  return Utilities.formatDate(d, tz, 'yyyy-MM');
+}
+function dateOf_(d) {
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+  return Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+}
+// 'YYYY-MM-DD' の日付が属する週の月曜日を 'YYYY-MM-DD' で返す
+function weekKeyOf_(dateStr) {
+  var parts = dateStr.split('-');
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  var day = d.getDay(); // 0=日 .. 6=土
+  var diffToMonday = (day === 0) ? -6 : (1 - day);
+  d.setDate(d.getDate() + diffToMonday);
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+  return Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+}
+
+function clampNum_(v, min, max, dflt) {
+  var n = Number(v);
+  if (isNaN(n)) return dflt;
+  return Math.max(min, Math.min(max, n));
+}
+
+/** 手動実行用: シートを初期化(既定スポット投入)。メニューやエディタから一度実行してもよい。 */
+function setup() {
+  getSheet_(SHEET_SPOTS);
+  getSheet_(SHEET_SHOTS);
+  Logger.log('初期化完了');
+}
