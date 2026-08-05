@@ -288,11 +288,12 @@ function actionGetTeamStats_(body) {
   var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
   shots.forEach(function (s) {
     if (ym && s.ym !== ym) return;
-    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0 });
+    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0 });
     u.name = s.displayName || u.name; // 最新表示名で上書き
     var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
-    // 個人スポットの記録は「合計」系ランキング(総合確率・本数・メイク数)には含めない(他の人に影響しないように)
+    u.taAll += s.attempts; // 本数ランキング用: マイページ(個人スポット)分も合算する
+    // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
     if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
   });
   var allUsers = Object.keys(byUser).map(function (uid) {
@@ -301,18 +302,17 @@ function actionGetTeamStats_(body) {
       var b = u.spots[sp.id] || { makes: 0, attempts: 0 };
       return { spotId: sp.id, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
     });
-    return { userId: u.userId, name: u.name, spots: spotStats, total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) } };
+    return { userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll, total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) } };
   });
 
   var pctRanked = allUsers.filter(function (u) { return attemptsOf_(u, spotId) > 0; })
     .sort(function (a, b) { return pctOf_(b, spotId) - pctOf_(a, spotId); });
-  // スポット選択に関わらず常に「全スポット合計」で見る確率ランキング(本数・メイク数ランキングと並べて表示する用)
+  // スポット選択に関わらず常に「全スポット合計(共通のみ)」で見る確率ランキング
   var totalPctRanked = allUsers.filter(function (u) { return u.total.attempts > 0; })
     .sort(function (a, b) { return b.total.pct - a.total.pct; });
-  var countRanked = allUsers.filter(function (u) { return u.total.attempts > 0; })
-    .sort(function (a, b) { return b.total.attempts - a.total.attempts; });
-  var makesRanked = allUsers.filter(function (u) { return u.total.makes > 0; })
-    .sort(function (a, b) { return b.total.makes - a.total.makes; });
+  // 本数ランキングはマイページ(個人スポット)分も含めた総試投数
+  var countRanked = allUsers.filter(function (u) { return u.totalAttemptsAll > 0; })
+    .sort(function (a, b) { return b.totalAttemptsAll - a.totalAttemptsAll; });
 
   // 「フリースロー」という名前のスポットがあれば、そのスポット専用のランキングを別枠で用意する
   var freeThrowSpot = null;
@@ -334,10 +334,7 @@ function actionGetTeamStats_(body) {
         return { userId: u.userId, name: u.name, makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
       }),
       countRanking: countRanked.map(function (u) {
-        return { userId: u.userId, name: u.name, attempts: u.total.attempts };
-      }),
-      makesRanking: makesRanked.map(function (u) {
-        return { userId: u.userId, name: u.name, makes: u.total.makes };
+        return { userId: u.userId, name: u.name, attempts: u.totalAttemptsAll };
       }),
       freeThrowSpotId: ftId || null,
       freeThrowRanking: ftRanked.map(function (u) {
@@ -360,10 +357,7 @@ function actionGetTeamStats_(body) {
       return { makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
     }),
     myCountRank: findRank_(countRanked, requestUserId, function (u) {
-      return { attempts: u.total.attempts };
-    }),
-    myMakesRank: findRank_(makesRanked, requestUserId, function (u) {
-      return { makes: u.total.makes };
+      return { attempts: u.totalAttemptsAll };
     }),
     freeThrowSpotId: ftId || null,
     myFreeThrowRank: freeThrowSpot ? findRank_(ftRanked, requestUserId, function (u) {

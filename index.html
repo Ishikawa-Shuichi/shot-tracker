@@ -136,13 +136,8 @@
       </div>
       <div class="card">
         <b>本数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計試投数(全スポット)</div>
+        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
         <div id="myCountRankBody"></div>
-      </div>
-      <div class="card">
-        <b>メイク数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計成功本数(全スポット)</div>
-        <div id="myMakesRankBody"></div>
       </div>
     </div>
     <!-- ホスト: 全員分 -->
@@ -169,13 +164,8 @@
       </div>
       <div class="card">
         <b>本数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計試投数(全スポット)</div>
+        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
         <div id="teamCountBody"></div>
-      </div>
-      <div class="card">
-        <b>メイク数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計成功本数(全スポット)</div>
-        <div id="teamMakesBody"></div>
       </div>
     </div>
   </section>
@@ -662,7 +652,6 @@ async function loadTeam(){
     renderMyRank('myPctRankBody', d.myPctRank, 'pct');
     renderMyRank('myTotalPctRankBody', d.myTotalPctRank, 'pct');
     renderMyRank('myCountRankBody', d.myCountRank, 'count');
-    renderMyRank('myMakesRankBody', d.myMakesRank, 'makes');
     document.getElementById('myFtHint').textContent = d.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
     renderMyRank('myFtRankBody', d.myFreeThrowRank, 'pct');
   }
@@ -683,8 +672,6 @@ function renderMyRank(hostId, entry, kind){
   if(!entry){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
   var detail = kind==='pct'
     ? entry.makes+'/'+entry.attempts+' 本 ・ <b class="pct">'+entry.pct+'%</b>'
-    : kind==='makes'
-    ? '合計 <b class="pct">'+entry.makes+'</b> 本 成功'
     : '合計 <b class="pct">'+entry.attempts+'</b> 本';
   host.innerHTML =
     '<div class="row"><span class="grow">あなたの順位</span><span class="pill" style="font-size:14px">'+entry.rank+' 位 / '+entry.total+'人中</span></div>'
@@ -692,14 +679,10 @@ function renderMyRank(hostId, entry, kind){
 }
 function renderTeamCount(){
   var d = state.teamData;
-  var rows = d.users.map(function(u){ return { name:u.name, attempts:u.total.attempts }; })
+  var rows = d.users.map(function(u){ return { name:u.name, attempts:u.totalAttemptsAll }; })
     .filter(function(r){ return r.attempts>0; });
   rows.sort(function(a,b){ return b.attempts-a.attempts; });
   renderRankTable('teamCountBody', rows, function(r){ return r.attempts; }, '本数');
-  var makesRows = d.users.map(function(u){ return { name:u.name, makes:u.total.makes }; })
-    .filter(function(r){ return r.makes>0; });
-  makesRows.sort(function(a,b){ return b.makes-a.makes; });
-  renderRankTable('teamMakesBody', makesRows, function(r){ return r.makes; }, 'メイク数');
 }
 function renderRankTable(hostId, rows, valueFn, colLabel){
   var host=document.getElementById(hostId);
