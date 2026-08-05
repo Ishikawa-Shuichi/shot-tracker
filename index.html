@@ -216,12 +216,19 @@
         <button class="pagebtn" id="addScopeSharedBtn">共通に追加</button>
         <button class="pagebtn active" id="addScopePersonalBtn">マイページに追加</button>
       </div>
+      <div class="row hidden" id="moveBanner" style="gap:8px; margin-bottom:10px; padding:10px; background:var(--card2); border-radius:10px;">
+        <span class="grow muted" id="moveHint">移動中</span>
+      </div>
       <div class="court-wrap" id="editCourtWrap">
         <svg class="court" viewBox="0 0 100 100" id="editCourtSvg"></svg>
       </div>
-      <div class="row" style="margin-top:10px; gap:8px">
+      <div class="row" style="margin-top:10px; gap:8px" id="addRow">
         <input type="text" id="newSpotName" placeholder="例: ミドル右45°" class="grow"/>
         <button class="btn" style="width:auto; padding:12px 16px" id="addSpotBtn">追加</button>
+      </div>
+      <div class="row hidden" style="margin-top:10px; gap:8px" id="moveRow">
+        <button class="btn sub" style="width:auto; padding:12px 16px" id="moveCancelBtn">キャンセル</button>
+        <button class="btn grow" id="moveConfirmBtn">ここに移動する</button>
       </div>
     </div>
     <div class="card">
@@ -307,7 +314,8 @@ var state = {
   recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイページ)
   addScope: 'personal', // 設定タブでスポット追加する対象
   trendGranularity: 'month', // 推移タブの粒度: 'day' | 'week' | 'month'
-  myGranularity: 'month'     // マイタブの粒度: 'day' | 'week' | 'month'
+  myGranularity: 'month',    // マイタブの粒度: 'day' | 'week' | 'month'
+  movingSpotId: null         // 移動中のスポットID(nullなら移動モードではない)
 };
 
 function currentPageSpots(){
@@ -949,6 +957,43 @@ onTap(document.getElementById('addSpotBtn'), async function(){
   }catch(e){ toast('エラー: '+e.message); }
   finally{ btn.disabled=false; }
 });
+
+// ---- 既存スポットの移動 ----
+function enterMoveMode(sp){
+  state.movingSpotId = sp.id;
+  state.editPos = { x: sp.x, y: sp.y };
+  document.getElementById('addScopeRow').classList.add('hidden');
+  document.getElementById('addRow').classList.add('hidden');
+  document.getElementById('moveBanner').classList.remove('hidden');
+  document.getElementById('moveRow').classList.remove('hidden');
+  document.getElementById('moveHint').textContent = '「'+sp.name+'」を移動中: コートをタップして新しい位置を選択';
+  renderEditCourt();
+  document.getElementById('editCourtWrap').scrollIntoView({ behavior:'smooth', block:'center' });
+}
+function exitMoveMode(){
+  state.movingSpotId = null;
+  state.editPos = null;
+  document.getElementById('addScopeRow').classList.remove('hidden');
+  document.getElementById('addRow').classList.remove('hidden');
+  document.getElementById('moveBanner').classList.add('hidden');
+  document.getElementById('moveRow').classList.add('hidden');
+  renderEditCourt();
+}
+onTap(document.getElementById('moveCancelBtn'), exitMoveMode);
+onTap(document.getElementById('moveConfirmBtn'), async function(){
+  var btn = document.getElementById('moveConfirmBtn');
+  if(!state.editPos){ toast('コートをタップして位置を選んでください'); return; }
+  try{
+    btn.disabled = true;
+    var d = await api('updateSpot', { spotId: state.movingSpotId, x: state.editPos.x, y: state.editPos.y, userId: state.user.userId });
+    state.spots = d.spots;
+    exitMoveMode();
+    renderCourt(); fillSpotSelectors(); renderSpotList();
+    toast('移動しました ✅');
+  }catch(e){ toast('エラー: '+e.message); }
+  finally{ btn.disabled = false; }
+});
+
 function renderSpotList(){
   var sharedHost=document.getElementById('spotListShared');
   var personalHost=document.getElementById('spotListPersonal');
@@ -960,6 +1005,9 @@ function renderSpotList(){
     var el=document.createElement('div'); el.className='listitem';
     el.innerHTML='<span>'+esc(sp.name)+'</span>';
     if(deletable){
+      var move=document.createElement('button'); move.textContent='移動'; move.className='muted'; move.style.marginRight='10px';
+      onTap(move, function(){ enterMoveMode(sp); });
+      el.appendChild(move);
       var del=document.createElement('button'); del.textContent='削除'; del.className='muted';
       onTap(del, async function(){
         if(!confirm(sp.name+' を削除しますか？(過去の記録は残ります)')) return;
