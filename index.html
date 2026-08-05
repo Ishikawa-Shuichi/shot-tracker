@@ -121,35 +121,40 @@
     <!-- 非ホスト: 自分の順位だけ -->
     <div id="teamMeOnly" class="hidden">
       <div class="card">
+        <b>シュート本数ランキング</b>
+        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
+        <div id="myCountRankBody"></div>
+      </div>
+      <div class="card">
         <b>フリースロー確率ランキング</b>
         <div class="muted" style="margin:6px 0" id="myFtHint"></div>
         <div id="myFtRankBody"></div>
       </div>
       <div class="card">
-        <b>総合確率ランキング</b>
-        <div class="muted" style="margin:6px 0">全スポット合計の確率</div>
+        <b>スリーポイントランキング</b>
+        <div class="muted" style="margin:6px 0">左コーナー・左ウイング・左スロット・トップ・右スロット・右ウイング・右コーナーの合計</div>
         <div id="myTotalPctRankBody"></div>
       </div>
       <div class="card">
         <div class="row"><b class="grow">確率ランキング</b><select id="teamSpotSelMe" style="width:150px"></select></div>
         <div id="myPctRankBody" style="margin-top:8px"></div>
       </div>
-      <div class="card">
-        <b>本数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
-        <div id="myCountRankBody"></div>
-      </div>
     </div>
     <!-- ホスト: 全員分 -->
     <div id="teamHostView" class="hidden">
+      <div class="card">
+        <b>シュート本数ランキング</b>
+        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
+        <div id="teamCountBody"></div>
+      </div>
       <div class="card">
         <b>フリースロー確率ランキング</b>
         <div class="muted" style="margin:6px 0" id="teamFtHint"></div>
         <div id="teamFtBody"></div>
       </div>
       <div class="card">
-        <b>総合確率ランキング</b>
-        <div class="muted" style="margin:6px 0">全スポット合計の確率</div>
+        <b>スリーポイントランキング</b>
+        <div class="muted" style="margin:6px 0">左コーナー・左ウイング・左スロット・トップ・右スロット・右ウイング・右コーナーの合計</div>
         <div id="teamTotalPctBody"></div>
       </div>
       <div class="card">
@@ -161,11 +166,6 @@
         </select>
         <div id="teamBody" style="margin-top:10px"></div>
         <div id="teamUserBody" style="margin-top:10px"></div>
-      </div>
-      <div class="card">
-        <b>本数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
-        <div id="teamCountBody"></div>
       </div>
     </div>
   </section>
@@ -643,17 +643,20 @@ async function loadTeam(){
     fillUserSelector(state.teamData.users);
     renderTeamView();
     renderTeamCount();
-    renderPctRankTable('teamTotalPctBody', state.teamData.totalPctRanking);
+    renderPctRankTable('teamTotalPctBody', state.teamData.threePointRanking);
     document.getElementById('teamFtHint').textContent = state.teamData.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
     renderPctRankTable('teamFtBody', state.teamData.freeThrowRanking);
   }else{
     var spotId = document.getElementById('teamSpotSelMe').value;
     var d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
-    renderMyRank('myPctRankBody', d.myPctRank, 'pct');
-    renderMyRank('myTotalPctRankBody', d.myTotalPctRank, 'pct');
-    renderMyRank('myCountRankBody', d.myCountRank, 'count');
+    // シュート本数ランキングだけは全員分を公開
+    var countRows = d.countRanking.map(function(u){ return { name:u.name, attempts:u.attempts }; });
+    renderRankTable('myCountRankBody', countRows, function(r){ return r.attempts; }, '本数');
+    // それ以外は自分の順位と1位の人だけ
+    renderMyRankWithTop('myPctRankBody', d.pctRank);
+    renderMyRankWithTop('myTotalPctRankBody', d.threePointRank);
     document.getElementById('myFtHint').textContent = d.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
-    renderMyRank('myFtRankBody', d.myFreeThrowRank, 'pct');
+    renderMyRankWithTop('myFtRankBody', d.freeThrowRank);
   }
 }
 function renderPctRankTable(hostId, rows){
@@ -667,15 +670,23 @@ function renderPctRankTable(hostId, rows){
   html+='</tbody></table>';
   host.innerHTML=html;
 }
-function renderMyRank(hostId, entry, kind){
+function renderMyRankWithTop(hostId, summary){
   var host = document.getElementById(hostId);
-  if(!entry){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
-  var detail = kind==='pct'
-    ? entry.makes+'/'+entry.attempts+' 本 ・ <b class="pct">'+entry.pct+'%</b>'
-    : '合計 <b class="pct">'+entry.attempts+'</b> 本';
-  host.innerHTML =
-    '<div class="row"><span class="grow">あなたの順位</span><span class="pill" style="font-size:14px">'+entry.rank+' 位 / '+entry.total+'人中</span></div>'
-    + '<div class="muted" style="margin-top:8px">'+detail+'</div>';
+  if(!summary || (!summary.mine && !summary.top)){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
+  function fmt(e){ return e.makes+'/'+e.attempts+' 本 ・ <b class="pct">'+e.pct+'%</b>'; }
+  var html = '';
+  if(summary.mine){
+    html += '<div class="row"><span class="grow">あなたの順位</span><span class="pill" style="font-size:14px">'+summary.mine.rank+' 位 / '+summary.mine.total+'人中</span></div>'
+      + '<div class="muted" style="margin-top:8px">'+fmt(summary.mine)+'</div>';
+  }else{
+    html += '<div class="muted">この期間の記録はまだありません</div>';
+  }
+  if(summary.top){
+    html += '<div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line)">'
+      + '<div class="row"><span class="grow">🥇 1位: '+esc(summary.top.name)+'</span></div>'
+      + '<div class="muted" style="margin-top:4px">'+fmt(summary.top)+'</div></div>';
+  }
+  host.innerHTML = html;
 }
 function renderTeamCount(){
   var d = state.teamData;

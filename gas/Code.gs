@@ -296,20 +296,34 @@ function actionGetTeamStats_(body) {
     // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
     if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
   });
+  // 「スリーポイントランキング」は以下7スポット(共通のみ)の合計で計算する
+  var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
+  var threePointSpotIds = allSpots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; })
+    .map(function (sp) { return sp.id; });
+
   var allUsers = Object.keys(byUser).map(function (uid) {
     var u = byUser[uid];
     var spotStats = allSpots.map(function (sp) {
       var b = u.spots[sp.id] || { makes: 0, attempts: 0 };
       return { spotId: sp.id, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
     });
-    return { userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll, total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) } };
+    var tpm = 0, tpa = 0;
+    threePointSpotIds.forEach(function (sid) {
+      var b = u.spots[sid] || { makes: 0, attempts: 0 };
+      tpm += b.makes; tpa += b.attempts;
+    });
+    return {
+      userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll,
+      total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) },
+      threePoint: { makes: tpm, attempts: tpa, pct: pct_(tpm, tpa) }
+    };
   });
 
   var pctRanked = allUsers.filter(function (u) { return attemptsOf_(u, spotId) > 0; })
     .sort(function (a, b) { return pctOf_(b, spotId) - pctOf_(a, spotId); });
-  // スポット選択に関わらず常に「全スポット合計(共通のみ)」で見る確率ランキング
-  var totalPctRanked = allUsers.filter(function (u) { return u.total.attempts > 0; })
-    .sort(function (a, b) { return b.total.pct - a.total.pct; });
+  // 左右コーナー・ウイング・スロット・トップの7スポット合計で見るスリーポイントランキング
+  var threePointRanked = allUsers.filter(function (u) { return u.threePoint.attempts > 0; })
+    .sort(function (a, b) { return b.threePoint.pct - a.threePoint.pct; });
   // 本数ランキングはマイページ(個人スポット)分も含めた総試投数
   var countRanked = allUsers.filter(function (u) { return u.totalAttemptsAll > 0; })
     .sort(function (a, b) { return b.totalAttemptsAll - a.totalAttemptsAll; });
@@ -330,8 +344,8 @@ function actionGetTeamStats_(body) {
         var s = spotStatOf_(u, spotId);
         return { userId: u.userId, name: u.name, makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
       }),
-      totalPctRanking: totalPctRanked.map(function (u) {
-        return { userId: u.userId, name: u.name, makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
+      threePointRanking: threePointRanked.map(function (u) {
+        return { userId: u.userId, name: u.name, makes: u.threePoint.makes, attempts: u.threePoint.attempts, pct: u.threePoint.pct };
       }),
       countRanking: countRanked.map(function (u) {
         return { userId: u.userId, name: u.name, attempts: u.totalAttemptsAll };
@@ -344,26 +358,28 @@ function actionGetTeamStats_(body) {
     };
   }
 
-  // ホスト以外には共通スポットの名前だけ返す(個人スポットの存在を他人に見せない)
+  // ホスト以外には共通スポットの名前だけ返す(個人スポットの存在を他人に見せない)。
+  // シュート本数ランキングだけは全員分を公開し、それ以外は「自分の順位」と「1位の人」だけ見せる
+  // (確率が低い人でも始めやすいように、細かい順位までは他人に見せない措置)。
   var spotsMetaShared = allSpots.filter(function (s) { return s.scope !== 'personal'; })
     .map(function (s) { return { spotId: s.id, name: s.name }; });
   return {
     ym: ym, spots: spotsMetaShared,
-    myPctRank: findRank_(pctRanked, requestUserId, function (u) {
+    countRanking: countRanked.map(function (u) {
+      return { userId: u.userId, name: u.name, attempts: u.totalAttemptsAll };
+    }),
+    pctRank: rankSummary_(pctRanked, requestUserId, function (u) {
       var s = spotStatOf_(u, spotId);
       return { makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
     }),
-    myTotalPctRank: findRank_(totalPctRanked, requestUserId, function (u) {
-      return { makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
-    }),
-    myCountRank: findRank_(countRanked, requestUserId, function (u) {
-      return { attempts: u.totalAttemptsAll };
+    threePointRank: rankSummary_(threePointRanked, requestUserId, function (u) {
+      return { makes: u.threePoint.makes, attempts: u.threePoint.attempts, pct: u.threePoint.pct };
     }),
     freeThrowSpotId: ftId || null,
-    myFreeThrowRank: freeThrowSpot ? findRank_(ftRanked, requestUserId, function (u) {
+    freeThrowRank: freeThrowSpot ? rankSummary_(ftRanked, requestUserId, function (u) {
       var s = spotStatOf_(u, ftId);
       return { makes: s.makes, attempts: s.attempts, pct: s.pct };
-    }) : null
+    }) : { mine: null, top: null }
   };
 }
 
@@ -445,16 +461,25 @@ function spotStatOf_(u, spotId) {
 function pctOf_(u, spotId) { return spotId ? spotStatOf_(u, spotId).pct : u.total.pct; }
 function attemptsOf_(u, spotId) { return spotId ? spotStatOf_(u, spotId).attempts : u.total.attempts; }
 
-function findRank_(rankedList, userId, extraFn) {
+// 非ホスト向け: 「自分の順位」と「1位の人」だけを返す(他の人の細かい順位は見せない)
+function rankSummary_(rankedList, userId, extraFn) {
+  var mine = null;
   for (var i = 0; i < rankedList.length; i++) {
     if (rankedList[i].userId === userId) {
       var extra = extraFn(rankedList[i]);
-      var out = { rank: i + 1, total: rankedList.length };
-      for (var k in extra) out[k] = extra[k];
-      return out;
+      mine = { rank: i + 1, total: rankedList.length };
+      for (var k in extra) mine[k] = extra[k];
+      break;
     }
   }
-  return null;
+  var top = null;
+  if (rankedList.length) {
+    var t = rankedList[0];
+    var te = extraFn(t);
+    top = { name: t.name };
+    for (var k2 in te) top[k2] = te[k2];
+  }
+  return { mine: mine, top: top };
 }
 
 // ===== データ層 ==================================================
