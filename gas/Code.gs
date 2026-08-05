@@ -304,10 +304,21 @@ function actionGetTeamStats_(body) {
 
   var pctRanked = allUsers.filter(function (u) { return attemptsOf_(u, spotId) > 0; })
     .sort(function (a, b) { return pctOf_(b, spotId) - pctOf_(a, spotId); });
+  // スポット選択に関わらず常に「全スポット合計」で見る確率ランキング(本数・メイク数ランキングと並べて表示する用)
+  var totalPctRanked = allUsers.filter(function (u) { return u.total.attempts > 0; })
+    .sort(function (a, b) { return b.total.pct - a.total.pct; });
   var countRanked = allUsers.filter(function (u) { return u.total.attempts > 0; })
     .sort(function (a, b) { return b.total.attempts - a.total.attempts; });
   var makesRanked = allUsers.filter(function (u) { return u.total.makes > 0; })
     .sort(function (a, b) { return b.total.makes - a.total.makes; });
+
+  // 「フリースロー」という名前のスポットがあれば、そのスポット専用のランキングを別枠で用意する
+  var freeThrowSpot = null;
+  for (var fi = 0; fi < allSpots.length; fi++) { if (allSpots[fi].name === 'フリースロー') { freeThrowSpot = allSpots[fi]; break; } }
+  var ftId = freeThrowSpot ? freeThrowSpot.id : '';
+  var ftRanked = freeThrowSpot
+    ? allUsers.filter(function (u) { return attemptsOf_(u, ftId) > 0; }).sort(function (a, b) { return pctOf_(b, ftId) - pctOf_(a, ftId); })
+    : [];
 
   if (isHost) {
     var spotsMetaAll = allSpots.map(function (s) { return { spotId: s.id, name: s.name, scope: s.scope, ownerId: s.ownerId }; });
@@ -317,11 +328,19 @@ function actionGetTeamStats_(body) {
         var s = spotStatOf_(u, spotId);
         return { userId: u.userId, name: u.name, makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
       }),
+      totalPctRanking: totalPctRanked.map(function (u) {
+        return { userId: u.userId, name: u.name, makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
+      }),
       countRanking: countRanked.map(function (u) {
         return { userId: u.userId, name: u.name, attempts: u.total.attempts };
       }),
       makesRanking: makesRanked.map(function (u) {
         return { userId: u.userId, name: u.name, makes: u.total.makes };
+      }),
+      freeThrowSpotId: ftId || null,
+      freeThrowRanking: ftRanked.map(function (u) {
+        var s = spotStatOf_(u, ftId);
+        return { userId: u.userId, name: u.name, makes: s.makes, attempts: s.attempts, pct: s.pct };
       })
     };
   }
@@ -335,12 +354,20 @@ function actionGetTeamStats_(body) {
       var s = spotStatOf_(u, spotId);
       return { makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
     }),
+    myTotalPctRank: findRank_(totalPctRanked, requestUserId, function (u) {
+      return { makes: u.total.makes, attempts: u.total.attempts, pct: u.total.pct };
+    }),
     myCountRank: findRank_(countRanked, requestUserId, function (u) {
       return { attempts: u.total.attempts };
     }),
     myMakesRank: findRank_(makesRanked, requestUserId, function (u) {
       return { makes: u.total.makes };
-    })
+    }),
+    freeThrowSpotId: ftId || null,
+    myFreeThrowRank: freeThrowSpot ? findRank_(ftRanked, requestUserId, function (u) {
+      var s = spotStatOf_(u, ftId);
+      return { makes: s.makes, attempts: s.attempts, pct: s.pct };
+    }) : null
   };
 }
 

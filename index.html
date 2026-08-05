@@ -121,6 +121,16 @@
     <!-- 非ホスト: 自分の順位だけ -->
     <div id="teamMeOnly" class="hidden">
       <div class="card">
+        <b>フリースロー確率ランキング</b>
+        <div class="muted" style="margin:6px 0" id="myFtHint"></div>
+        <div id="myFtRankBody"></div>
+      </div>
+      <div class="card">
+        <b>総合確率ランキング</b>
+        <div class="muted" style="margin:6px 0">全スポット合計の確率</div>
+        <div id="myTotalPctRankBody"></div>
+      </div>
+      <div class="card">
         <div class="row"><b class="grow">確率ランキング</b><select id="teamSpotSelMe" style="width:150px"></select></div>
         <div id="myPctRankBody" style="margin-top:8px"></div>
       </div>
@@ -137,6 +147,16 @@
     </div>
     <!-- ホスト: 全員分 -->
     <div id="teamHostView" class="hidden">
+      <div class="card">
+        <b>フリースロー確率ランキング</b>
+        <div class="muted" style="margin:6px 0" id="teamFtHint"></div>
+        <div id="teamFtBody"></div>
+      </div>
+      <div class="card">
+        <b>総合確率ランキング</b>
+        <div class="muted" style="margin:6px 0">全スポット合計の確率</div>
+        <div id="teamTotalPctBody"></div>
+      </div>
       <div class="card">
         <div class="row"><b class="grow">確率ランキング</b></div>
         <div class="muted" style="margin:6px 0">スポット別のランキング、または選手を選んで個人成績を見られます</div>
@@ -629,13 +649,30 @@ async function loadTeam(){
     fillUserSelector(state.teamData.users);
     renderTeamView();
     renderTeamCount();
+    renderPctRankTable('teamTotalPctBody', state.teamData.totalPctRanking);
+    document.getElementById('teamFtHint').textContent = state.teamData.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
+    renderPctRankTable('teamFtBody', state.teamData.freeThrowRanking);
   }else{
     var spotId = document.getElementById('teamSpotSelMe').value;
     var d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
     renderMyRank('myPctRankBody', d.myPctRank, 'pct');
+    renderMyRank('myTotalPctRankBody', d.myTotalPctRank, 'pct');
     renderMyRank('myCountRankBody', d.myCountRank, 'count');
     renderMyRank('myMakesRankBody', d.myMakesRank, 'makes');
+    document.getElementById('myFtHint').textContent = d.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
+    renderMyRank('myFtRankBody', d.myFreeThrowRank, 'pct');
   }
+}
+function renderPctRankTable(hostId, rows){
+  var host=document.getElementById(hostId);
+  if(!rows || !rows.length){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
+  var html='<table><thead><tr><th>#</th><th>選手</th><th>本数</th><th>確率</th></tr></thead><tbody>';
+  rows.forEach(function(r,i){
+    var medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
+    html+='<tr><td>'+medal+'</td><td>'+esc(r.name)+'</td><td>'+r.makes+'/'+r.attempts+'</td><td><b>'+r.pct+'%</b></td></tr>';
+  });
+  html+='</tbody></table>';
+  host.innerHTML=html;
 }
 function renderMyRank(hostId, entry, kind){
   var host = document.getElementById(hostId);
