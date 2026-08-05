@@ -283,6 +283,7 @@ function actionGetTeamStats_(body) {
   var spotId = String(body.spotId || ''); // '' = 合計(全スポット)
 
   var allSpots = getSpots_(null, true); // 集計用には共通+全員の個人スポットを使う
+  var scopeOf = {}; allSpots.forEach(function (sp) { scopeOf[sp.id] = sp.scope; });
   var shots = getShots_();
   var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
   shots.forEach(function (s) {
@@ -291,7 +292,8 @@ function actionGetTeamStats_(body) {
     u.name = s.displayName || u.name; // 最新表示名で上書き
     var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
-    u.tm += s.makes; u.ta += s.attempts;
+    // 個人スポットの記録は「合計」系ランキング(総合確率・本数・メイク数)には含めない(他の人に影響しないように)
+    if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
   });
   var allUsers = Object.keys(byUser).map(function (uid) {
     var u = byUser[uid];
