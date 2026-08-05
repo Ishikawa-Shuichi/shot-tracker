@@ -816,7 +816,7 @@ function updateProxyHint(){
 }
 async function refreshProxyStats(){
   if(!state.recordingAs){ state.proxyStats = null; return; }
-  try{ state.proxyStats = await api('getMyStats', { userId: state.recordingAs.userId, ym: state.ym }); }
+  try{ state.proxyStats = await api('getMyStats', { userId: state.user.userId, targetUserId: state.recordingAs.userId, ym: state.ym }); }
   catch(e){ state.proxyStats = null; }
 }
 

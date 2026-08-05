@@ -265,9 +265,13 @@ function actionRenameUser_(body) {
 }
 
 function actionGetMyStats_(body) {
-  var userId = String(body.userId || '');
+  var requesterId = String(body.userId || '');
+  var targetUserId = String(body.targetUserId || '') || requesterId;
+  if (targetUserId !== requesterId && requesterId !== HOST_USER_ID) {
+    throw new Error('この統計を見る権限がありません');
+  }
   var ym = String(body.ym || '') || null; // 指定なしなら全期間
-  return computeMyStats_(getSpots_(userId), getShots_(), userId, ym);
+  return computeMyStats_(getSpots_(targetUserId), getShots_(), targetUserId, ym);
 }
 
 // ホスト以外は「自分の順位」だけ、ホストは全員分(個人スポット含む)を見られる。
