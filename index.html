@@ -111,6 +111,14 @@
   <!-- ===== マイタブ ===== -->
   <section id="tab-my" class="hidden">
     <div class="card">
+      <div class="row" style="gap:8px">
+        <button class="pagebtn active" id="myGranMonth">月</button>
+        <button class="pagebtn" id="myGranWeek">週</button>
+        <button class="pagebtn" id="myGranDay">日</button>
+      </div>
+      <input type="date" id="myPeriodDate" class="hidden" style="margin-top:8px"/>
+    </div>
+    <div class="card">
       <div class="row"><b class="grow">マイスタッツ</b><span class="pill" id="myTotal"></span></div>
       <div id="myStats"></div>
     </div>
@@ -296,7 +304,8 @@ var state = {
   proxyStats: null,    // recordingAs で選んだ人の統計(ホストがコート上で確認できるように)
   recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイページ)
   addScope: 'personal', // 設定タブでスポット追加する対象
-  trendGranularity: 'month' // 推移タブの粒度: 'day' | 'week' | 'month'
+  trendGranularity: 'month', // 推移タブの粒度: 'day' | 'week' | 'month'
+  myGranularity: 'month'     // マイタブの粒度: 'day' | 'week' | 'month'
 };
 
 function currentPageSpots(){
@@ -583,6 +592,9 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
 // ================= マイ =================
 function applyMyStats(stats){
   state.myStats = stats;
+  renderMyStatsView(stats);
+}
+function renderMyStatsView(stats){
   var t = stats.total;
   document.getElementById('myTotal').textContent = '合計 '+t.makes+'/'+t.attempts+' ('+t.pct+'%)';
   var host = document.getElementById('myStats'); host.innerHTML='';
@@ -598,6 +610,29 @@ function applyMyStats(stats){
 }
 async function loadMyStats(){
   applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
+}
+// マイタブ限定の週/日フィルタ(記録タブのコート表示や他タブには影響させない)
+onTap(document.getElementById('myGranMonth'), function(){ setMyGranularity('month'); });
+onTap(document.getElementById('myGranWeek'), function(){ setMyGranularity('week'); });
+onTap(document.getElementById('myGranDay'), function(){ setMyGranularity('day'); });
+document.getElementById('myPeriodDate').addEventListener('change', loadMyTabCustomStats);
+function setMyGranularity(g){
+  state.myGranularity = g;
+  document.getElementById('myGranMonth').classList.toggle('active', g==='month');
+  document.getElementById('myGranWeek').classList.toggle('active', g==='week');
+  document.getElementById('myGranDay').classList.toggle('active', g==='day');
+  var dateInput = document.getElementById('myPeriodDate');
+  dateInput.classList.toggle('hidden', g==='month');
+  if(g!=='month' && !dateInput.value) dateInput.value = todayStr();
+  refreshMyTab();
+}
+async function loadMyTabCustomStats(){
+  var dateVal = document.getElementById('myPeriodDate').value || todayStr();
+  renderMyStatsView(await api('getMyStats', { userId: state.user.userId, granularity: state.myGranularity, period: dateVal }));
+}
+function refreshMyTab(){
+  if(state.myGranularity==='month'){ loadMyStats(); }
+  else { loadMyTabCustomStats(); }
 }
 
 // ================= 履歴 =================
@@ -954,7 +989,7 @@ document.querySelectorAll('nav button').forEach(function(b){
     if(tab==='team') loadTeam();
     if(tab==='trend') loadTrend();
     if(tab==='settings'){ renderEditCourt(); renderSpotList(); }
-    if(tab==='my') loadMyStats();
+    if(tab==='my') refreshMyTab();
   });
 });
 

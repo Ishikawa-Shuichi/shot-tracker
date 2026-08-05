@@ -81,7 +81,7 @@ function actionInit_(body) {
     ym: ym,
     serverTime: new Date().toISOString(),
     isHost: isHost,
-    myStats: computeMyStats_(spots, shots, userId, ym),
+    myStats: computeMyStats_(spots, shots, userId, 'month', ym),
     history: computeHistory_(spots, shots, userId, 20)
   };
   if (isHost) result.members = uniqueMembers_(shots);
@@ -184,7 +184,7 @@ function actionRecordShot_(body) {
   var viewYm = String(body.viewYm || '') || null;
   return {
     id: id, ym: ym,
-    myStats: computeMyStats_(spots, shots, actingUserId, viewYm),
+    myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
     history: computeHistory_(spots, shots, actingUserId, 20)
   };
 }
@@ -217,7 +217,7 @@ function actionUpdateShot_(body) {
     var viewYm = String(body.viewYm || '') || null;
     return {
       id: id,
-      myStats: computeMyStats_(spots, shots, actingUserId, viewYm),
+      myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
       history: computeHistory_(spots, shots, actingUserId, 20)
     };
   }
@@ -240,7 +240,7 @@ function actionDeleteShot_(body) {
     var viewYm = String(body.viewYm || '') || null;
     return {
       id: id,
-      myStats: computeMyStats_(spots, shots, actingUserId, viewYm),
+      myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
       history: computeHistory_(spots, shots, actingUserId, 20)
     };
   }
@@ -270,8 +270,11 @@ function actionGetMyStats_(body) {
   if (targetUserId !== requesterId && requesterId !== HOST_USER_ID) {
     throw new Error('この統計を見る権限がありません');
   }
-  var ym = String(body.ym || '') || null; // 指定なしなら全期間
-  return computeMyStats_(getSpots_(targetUserId), getShots_(), targetUserId, ym);
+  // granularity: 'month'(既定) | 'week' | 'day'。period が空なら全期間。
+  // 後方互換のため period 未指定時は ym を使う。
+  var granularity = String(body.granularity || 'month');
+  var period = body.period != null ? (String(body.period) || null) : (String(body.ym || '') || null);
+  return computeMyStats_(getSpots_(targetUserId), getShots_(), targetUserId, granularity, period);
 }
 
 // ホスト以外は「自分の順位」だけ、ホストは全員分(個人スポット含む)を見られる。
@@ -422,11 +425,20 @@ function actionGetHistory_(body) {
 
 // ===== 集計ロジック(使い回し用) ==================================
 
-function computeMyStats_(spots, shots, userId, ym) {
+function computeMyStats_(spots, shots, userId, granularity, period) {
+  // granularity: 'month'(既定) | 'week' | 'day'。period が空/nullなら全期間。
+  // week指定時は period(任意の日付)が属する週の月曜日キーに正規化して比較する。
+  var targetKey = null;
+  if (period) {
+    targetKey = granularity === 'week' ? weekKeyOf_(period) : period;
+  }
   var bySpot = {};
   shots.forEach(function (s) {
     if (s.userId !== userId) return;
-    if (ym && s.ym !== ym) return;
+    if (targetKey) {
+      var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;
+      if (key !== targetKey) return;
+    }
     var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
   });
@@ -435,7 +447,7 @@ function computeMyStats_(spots, shots, userId, ym) {
     return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
   });
   var tot = stats.reduce(function (a, s) { a.makes += s.makes; a.attempts += s.attempts; return a; }, { makes: 0, attempts: 0 });
-  return { ym: ym, spots: stats, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
+  return { granularity: granularity, period: period, spots: stats, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
 }
 
 function computeHistory_(spots, shots, userId, limit) {
