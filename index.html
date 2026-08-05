@@ -96,7 +96,7 @@
       <button class="pagebtn" id="pagePersonalBtn">マイページ</button>
     </div>
     <div class="card">
-      <div class="muted">スポットをタップして記録（この画面の集計は選択中の月）</div>
+      <div class="muted" id="courtHint">スポットをタップして記録（この画面の集計は選択中の月）</div>
       <div class="court-wrap" id="courtWrap">
         <svg class="court" viewBox="0 0 100 100" id="courtSvg"></svg>
         <!-- スポットは JS で配置 -->
@@ -284,6 +284,7 @@ var state = {
   isHost: false,      // ホスト(全員の記録を見る/代理記録できる)かどうか
   members: [],        // ホスト用: これまでに記録があるメンバー一覧
   recordingAs: null,   // ホストの代理記録対象 {userId,name}。nullなら自分
+  proxyStats: null,    // recordingAs で選んだ人の統計(ホストがコート上で確認できるように)
   recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイページ)
   addScope: 'personal', // 設定タブでスポット追加する対象
   trendGranularity: 'month' // 推移タブの粒度: 'day' | 'week' | 'month'
@@ -386,7 +387,7 @@ document.getElementById('ymSel').addEventListener('change', async function(e){
 });
 
 async function refreshAll(){
-  await Promise.all([ loadMyStats(), loadHistory() ]);
+  await Promise.all([ loadMyStats(), loadHistory(), refreshProxyStats() ]);
   renderCourt();     // マイ確率をコートに反映
   var active = document.querySelector('nav button.active').dataset.tab;
   if(active==='team') loadTeam();
@@ -420,7 +421,11 @@ function renderCourt(){
   var wrap = document.getElementById('courtWrap');
   // 既存スポットDOM削除
   Array.prototype.slice.call(wrap.querySelectorAll('.spot')).forEach(function(n){n.remove();});
-  var my = {}; if(state.myStats){ state.myStats.spots.forEach(function(s){ my[s.spotId]=s; }); }
+  var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
+  var my = {}; if(statsSource){ statsSource.spots.forEach(function(s){ my[s.spotId]=s; }); }
+  document.getElementById('courtHint').textContent = state.recordingAs
+    ? '「'+state.recordingAs.name+'」さんの成績を表示中・スポットをタップして記録'
+    : 'スポットをタップして記録（この画面の集計は選択中の月）';
   var pageSpots = currentPageSpots();
   if(!pageSpots.length){
     var empty=document.createElement('div'); empty.className='muted center'; empty.style.padding='30px 0';
@@ -543,6 +548,7 @@ onTap(document.getElementById('recSave'), async function(){
     closeRecord();
     applyMyStats(res.myStats);
     applyHistory(res.history);
+    if(state.recordingAs) await refreshProxyStats();
     renderCourt();
   }catch(e){ toast('エラー: '+e.message); }
   finally{ btn.disabled=false; }
@@ -783,7 +789,7 @@ function renderProxyUI(){
   if(prev) sel.value=prev;
   updateProxyHint();
 }
-document.getElementById('proxySel').addEventListener('change', function(){
+document.getElementById('proxySel').addEventListener('change', async function(){
   var sel = document.getElementById('proxySel');
   if(sel.value === '__add__'){
     var name = prompt('記録対象の名前を入力してください(例: 田中)');
@@ -793,16 +799,25 @@ document.getElementById('proxySel').addEventListener('change', function(){
     state.members.push(member);
     state.recordingAs = member;
     renderProxyUI();
+    await refreshProxyStats();
+    renderCourt();
     return;
   }
   if(!sel.value){ state.recordingAs = null; }
   else{ state.recordingAs = state.members.find(function(x){ return x.userId===sel.value; }) || null; }
   updateProxyHint();
+  await refreshProxyStats();
+  renderCourt();
 });
 function updateProxyHint(){
   document.getElementById('proxyHint').textContent = state.recordingAs
-    ? '現在「'+state.recordingAs.name+'」さんの記録として保存されます'
+    ? '現在「'+state.recordingAs.name+'」さんの記録として保存されます(コートにその人の成績を表示中)'
     : '現在は自分の記録として保存されます';
+}
+async function refreshProxyStats(){
+  if(!state.recordingAs){ state.proxyStats = null; return; }
+  try{ state.proxyStats = await api('getMyStats', { userId: state.recordingAs.userId, ym: state.ym }); }
+  catch(e){ state.proxyStats = null; }
 }
 
 // ================= 設定(表示名) =================
