@@ -103,7 +103,7 @@
       </div>
     </div>
     <div class="card">
-      <div class="row"><b class="grow">最近の記録</b><span class="muted" id="histCount"></span></div>
+      <div class="row"><b class="grow" id="historyTitle">最近の記録</b><span class="muted" id="histCount"></span></div>
       <div id="historyList"></div>
     </div>
   </section>
@@ -510,7 +510,8 @@ function openEditShot(item){
   state.current = { id: item.spotId, name: item.spot };
   state.editingShotId = item.id;
   rec = { makes: item.makes, attempts: item.attempts };
-  document.getElementById('recSpotName').textContent = '✏️ '+item.spot+'(編集)';
+  var who = state.recordingAs ? '・'+state.recordingAs.name+'さん' : '';
+  document.getElementById('recSpotName').textContent = '✏️ '+item.spot+'(編集'+who+')';
   document.getElementById('recDate').value = item.date;
   document.getElementById('recDeleteBtn').classList.remove('hidden');
   renderQuick();
@@ -567,8 +568,8 @@ onTap(document.getElementById('recSave'), async function(){
     }
     closeRecord();
     applyMyStats(res.myStats);
-    applyHistory(res.history);
-    if(state.recordingAs) await refreshProxyStats();
+    if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
+    else{ applyHistory(res.history); }
     renderCourt();
   }catch(e){ toast('エラー: '+e.message); }
   finally{ btn.disabled=false; }
@@ -582,7 +583,8 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
     closeRecord();
     toast('削除しました');
     applyMyStats(res.myStats);
-    applyHistory(res.history);
+    if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
+    else{ applyHistory(res.history); }
     renderCourt();
   }catch(e){ toast('エラー: '+e.message); }
   finally{ btn.disabled=false; }
@@ -621,7 +623,9 @@ function applyHistory(items){
   });
 }
 async function loadHistory(){
-  var d = await api('getHistory', { userId: state.user.userId, limit: 20 });
+  var targetId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
+  document.getElementById('historyTitle').textContent = state.recordingAs ? state.recordingAs.name+'さんの最近の記録' : '最近の記録';
+  var d = await api('getHistory', { userId: state.user.userId, targetUserId: targetId, limit: 20 });
   applyHistory(d.items);
 }
 
@@ -837,6 +841,7 @@ document.getElementById('proxySel').addEventListener('change', async function(){
     state.recordingAs = member;
     renderProxyUI();
     await refreshProxyStats();
+    await loadHistory();
     renderCourt();
     return;
   }
@@ -844,6 +849,7 @@ document.getElementById('proxySel').addEventListener('change', async function(){
   else{ state.recordingAs = state.members.find(function(x){ return x.userId===sel.value; }) || null; }
   updateProxyHint();
   await refreshProxyStats();
+  await loadHistory();
   renderCourt();
 });
 function updateProxyHint(){

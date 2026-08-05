@@ -395,9 +395,13 @@ function actionGetTrend_(body) {
 }
 
 function actionGetHistory_(body) {
-  var userId = String(body.userId || '');
+  var requesterId = String(body.userId || '');
+  var targetUserId = String(body.targetUserId || '') || requesterId;
+  if (targetUserId !== requesterId && requesterId !== HOST_USER_ID) {
+    throw new Error('この履歴を見る権限がありません');
+  }
   var limit = Math.min(200, Math.max(1, Math.floor(Number(body.limit) || 50)));
-  return { items: computeHistory_(getSpots_(userId), getShots_(), userId, limit) };
+  return { items: computeHistory_(getSpots_(targetUserId), getShots_(), targetUserId, limit) };
 }
 
 // ===== 集計ロジック(使い回し用) ==================================
