@@ -35,9 +35,11 @@
   .pct{font-weight:800;}
   .pill{display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:var(--card2); border:1px solid var(--line);}
 
-  /* コート */
-  .court-wrap{position:relative; width:100%; max-width:360px; margin:6px auto 0; aspect-ratio:1/1;}
-  svg.court{width:100%; height:100%; display:block; touch-action:manipulation;}
+  /* コート: aspect-ratioに対応していないブラウザでも確実に正方形にするため、
+     padding-top:100%の伝統的な手法で高さを幅から作る(記録/設定タブで形がズレないようにするため) */
+  .court-wrap{position:relative; width:100%; max-width:360px; margin:6px auto 0;}
+  .court-wrap::before{content:''; display:block; padding-top:100%;}
+  svg.court{position:absolute; top:0; left:0; width:100%; height:100%; display:block; touch-action:manipulation;}
   .spot{position:absolute; transform:translate(-50%,-50%); text-align:center;}
   .spot .dot{width:44px; height:44px; border-radius:50%; background:rgba(255,122,26,.9);
     border:2px solid #fff; display:flex; align-items:center; justify-content:center;
