@@ -80,6 +80,14 @@
 </style>
 </head>
 <body>
+<div class="sheet-bg" id="loadErrorBg" style="align-items:center; justify-content:center; z-index:50;">
+  <div class="sheet" style="border-radius:16px; max-width:320px; margin:0 16px; text-align:center;">
+    <div style="font-size:32px">📶</div>
+    <b style="display:block; margin-top:10px">読み込みに時間がかかっています</b>
+    <div class="muted" style="margin-top:8px">電波の弱い場所にいる可能性があります。しばらく待つか、電波の良い場所でもう一度お試しください。</div>
+    <button class="btn" id="loadRetryBtn" style="margin-top:16px">再読み込み</button>
+  </div>
+</div>
 <header>
   <div class="grow"><h1 id="title">🏀 シュート記録</h1><div class="who" id="who">読み込み中…</div></div>
   <select id="ymSel" style="width:130px"></select>
@@ -345,15 +353,33 @@ function onTap(el, handler){
 }
 
 // ---- API ----
-async function api(action, payload){
-  var res = await fetch(GAS_URL, {
-    method:'POST',
-    headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body: JSON.stringify(Object.assign({action:action, token:API_TOKEN}, payload||{}))
-  });
-  var j = await res.json();
-  if(!j.ok) throw new Error(j.error||'エラー');
-  return j.data;
+// 電波が弱い場所などで通信が固まったままにならないよう、一定時間で諦めて自動的に再試行する。
+async function api(action, payload, opts){
+  opts = opts || {};
+  var maxRetries = opts.retries != null ? opts.retries : 2;
+  var timeoutMs = opts.timeoutMs || 12000;
+  var lastErr;
+  for(var attempt=0; attempt<=maxRetries; attempt++){
+    var controller = ('AbortController' in window) ? new AbortController() : null;
+    var timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
+    try{
+      var res = await fetch(GAS_URL, {
+        method:'POST',
+        headers:{'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify(Object.assign({action:action, token:API_TOKEN}, payload||{})),
+        signal: controller ? controller.signal : undefined
+      });
+      if(timer) clearTimeout(timer);
+      var j = await res.json();
+      if(!j.ok) throw new Error(j.error||'エラー');
+      return j.data;
+    }catch(e){
+      if(timer) clearTimeout(timer);
+      lastErr = (e && e.name==='AbortError') ? new Error('通信がタイムアウトしました') : e;
+      if(attempt < maxRetries) continue; // 通信エラー/タイムアウトならすぐ次を試す
+    }
+  }
+  throw lastErr;
 }
 
 // ---- 起動 ----
@@ -374,8 +400,14 @@ async function api(action, payload){
   if(nameOverride) state.user.displayName = nameOverride;
   document.getElementById('who').textContent = state.user.displayName + ' さん';
   document.getElementById('displayNameInput').value = state.user.displayName;
-  await boot();
+  try{
+    await boot();
+  }catch(e){
+    console.warn('起動時の読み込みに失敗:', e);
+    document.getElementById('loadErrorBg').classList.add('open');
+  }
 })();
+onTap(document.getElementById('loadRetryBtn'), function(){ location.reload(); });
 
 async function boot(){
   // 起動に必要なデータ(スポット/自分の統計/履歴)を1回のAPI呼び出しでまとめて取得(高速化)
