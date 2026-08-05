@@ -175,9 +175,8 @@
     <div class="card">
       <div class="row" style="gap:8px">
         <select id="trendSpotSel" class="grow"></select>
-        <select id="trendWho" style="width:110px">
+        <select id="trendWho" style="width:130px">
           <option value="me">自分</option>
-          <option value="team">チーム</option>
         </select>
       </div>
       <div class="row" style="gap:8px; margin-top:8px">
@@ -377,6 +376,7 @@ async function boot(){
   renderProxyUI();
   renderAddScopeUI();
   renderSpotList();
+  fillTrendWhoSelector();
 }
 
 // ---- 月セレクタ ----
@@ -776,12 +776,25 @@ function formatTrendKey(key, g){
   if(g==='week') return key.slice(5).replace('-','/')+'週';
   return key.slice(5).replace('-','/');
 }
+function fillTrendWhoSelector(){
+  var sel = document.getElementById('trendWho');
+  var prev = sel.value;
+  sel.innerHTML = '<option value="me">自分</option>';
+  if(state.isHost){
+    var teamOpt = document.createElement('option'); teamOpt.value='team'; teamOpt.textContent='チーム'; sel.appendChild(teamOpt);
+    state.members.filter(function(m){ return m.userId !== state.user.userId; }).forEach(function(m){
+      var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o);
+    });
+  }
+  if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
+}
 async function loadTrend(){
   var spotId=document.getElementById('trendSpotSel').value;
   if(!spotId) return;
   var who=document.getElementById('trendWho').value;
+  var targetUserId = who==='me' ? state.user.userId : (who==='team' ? '' : who);
   var g = state.trendGranularity;
-  var d = await api('getTrend', { spotId: spotId, userId: who==='me'? state.user.userId : '', granularity: g });
+  var d = await api('getTrend', { spotId: spotId, userId: state.user.userId, targetUserId: targetUserId, granularity: g });
   var labels=d.points.map(function(p){ return formatTrendKey(p.key, g); });
   var data=d.points.map(function(p){ return p.pct; });
   if(state.chart) state.chart.destroy();

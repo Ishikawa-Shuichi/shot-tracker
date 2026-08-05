@@ -384,15 +384,21 @@ function actionGetTeamStats_(body) {
 }
 
 function actionGetTrend_(body) {
-  // 指定スポットの推移。granularity: 'day' | 'week' | 'month'(既定)。userId 指定で個人、なければチーム合算。
+  // 指定スポットの推移。granularity: 'day' | 'week' | 'month'(既定)。
+  // targetUserId 指定で個人、空ならチーム合算(チーム合算・他人の推移はホストのみ閲覧可)。
   var spotId = String(body.spotId || '');
-  var userId = String(body.userId || '') || null;
+  var requesterId = String(body.userId || '');
+  var targetUserId = String(body.targetUserId || '') || null;
+  var isHost = !!requesterId && requesterId === HOST_USER_ID;
+  if (!isHost && targetUserId !== requesterId) {
+    throw new Error('この推移を見る権限がありません');
+  }
   var granularity = String(body.granularity || 'month');
   var shots = getShots_();
   var byKey = {};
   shots.forEach(function (s) {
     if (s.spotId !== spotId) return;
-    if (userId && s.userId !== userId) return;
+    if (targetUserId && s.userId !== targetUserId) return;
     var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;
     var b = byKey[key] || (byKey[key] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
@@ -401,7 +407,7 @@ function actionGetTrend_(body) {
     var b = byKey[key];
     return { key: key, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
   });
-  return { spotId: spotId, userId: userId, granularity: granularity, points: points };
+  return { spotId: spotId, userId: targetUserId, granularity: granularity, points: points };
 }
 
 function actionGetHistory_(body) {
