@@ -18,6 +18,20 @@ var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
 var SHEET_SPOTS = 'Spots';
 var SHEET_SHOTS = 'Shots';
 
+// スポット一覧はめったに変わらないため、一定時間キャッシュして毎回の読み込みを省略する。
+var SPOTS_CACHE_KEY = 'spots_raw_v1';
+var SPOTS_CACHE_TTL_SEC = 300; // 5分
+
+// チーム統計の重い集計結果(全ユーザー×全スポットの集計)も短時間キャッシュする。
+// 個人の記録保存自体は即時反映されるので、チームランキングの表示だけがこの秒数分だけ遅れて更新される。
+var TEAMAGG_CACHE_PREFIX = 'teamagg_v1_';
+var TEAMAGG_CACHE_TTL_SEC = 30;
+
+// Shots(全記録)シートの生データも短時間キャッシュする。記録の保存・更新・削除の直後は
+// 必ずキャッシュを無効化するので、記録した本人にはズレなく即時反映される。
+var SHOTS_CACHE_KEY = 'shots_raw_v1';
+var SHOTS_CACHE_TTL_SEC = 20;
+
 // 既定スポット(初回のみ自動投入)。x,y はコート図上の位置(0〜100%)。すべて共通(shared)スポット。
 var DEFAULT_SPOTS = [
   { name: '左コーナー', x: 10, y: 18 },
@@ -104,6 +118,7 @@ function actionAddSpot_(body) {
   var id = Utilities.getUuid();
   var order = sh.getLastRow(); // ヘッダ含む行数 ≒ 追加順
   sh.appendRow([id, name, x, y, order, true, new Date().toISOString(), scope, ownerId]);
+  invalidateSpotsCache_();
   return { spots: getSpots_(userId) };
 }
 
@@ -118,6 +133,7 @@ function actionUpdateSpot_(body) {
       if (body.name != null) sh.getRange(i + 1, 2).setValue(String(body.name).trim());
       if (body.x != null)    sh.getRange(i + 1, 3).setValue(clampNum_(body.x, 0, 100, rows[i][2]));
       if (body.y != null)    sh.getRange(i + 1, 4).setValue(clampNum_(body.y, 0, 100, rows[i][3]));
+      invalidateSpotsCache_();
       return { spots: getSpots_(userId) };
     }
   }
@@ -134,6 +150,7 @@ function actionDeleteSpot_(body) {
     if (String(rows[i][0]) === id) {
       assertSpotEditable_(rows[i], userId);
       sh.getRange(i + 1, 6).setValue(false);
+      invalidateSpotsCache_();
       return { spots: getSpots_(userId) };
     }
   }
@@ -172,12 +189,31 @@ function actionRecordShot_(body) {
   var d = dateStr ? new Date(dateStr + 'T00:00:00') : new Date();
   var ym = ymOf_(d);
 
+  // 通信リトライで同じ保存が二重実行されても記録が重複しないよう、
+  // クライアントが発行したID(clientId)を記録IDに使い、既に存在すれば追記せず成功として返す(冪等化)。
+  var clientId = String(body.clientId || '').trim();
+  var id = clientId || Utilities.getUuid();
+  if (clientId) {
+    var existing = getShots_();
+    for (var ei = 0; ei < existing.length; ei++) {
+      if (existing[ei].id === clientId) {
+        var spotsDup = getSpots_(actingUserId);
+        var viewYmDup = String(body.viewYm || '') || null;
+        return {
+          id: clientId, ym: existing[ei].ym, duplicate: true,
+          myStats: computeMyStats_(spotsDup, existing, actingUserId, 'month', viewYmDup),
+          history: computeHistory_(spotsDup, existing, actingUserId, 20)
+        };
+      }
+    }
+  }
+
   var sh = getSheet_(SHEET_SHOTS);
-  var id = Utilities.getUuid();
   sh.appendRow([
     id, new Date().toISOString(), ym, dateOf_(d),
     userId, displayName, spotId, makes, attempts
   ]);
+  invalidateShotsCache_();
 
   var spots = getSpots_(actingUserId);
   var shots = getShots_();
@@ -211,6 +247,7 @@ function actionUpdateShot_(body) {
     }
     sh.getRange(i + 1, 8).setValue(makes);
     sh.getRange(i + 1, 9).setValue(attempts);
+    invalidateShotsCache_();
 
     var spots = getSpots_(actingUserId);
     var shots = getShots_();
@@ -234,6 +271,7 @@ function actionDeleteShot_(body) {
     var ownerId = String(rows[i][4]);
     if (ownerId !== actingUserId && actingUserId !== HOST_USER_ID) throw new Error('この記録を削除する権限がありません');
     sh.deleteRow(i + 1);
+    invalidateShotsCache_();
 
     var spots = getSpots_(actingUserId);
     var shots = getShots_();
@@ -244,7 +282,15 @@ function actionDeleteShot_(body) {
       history: computeHistory_(spots, shots, actingUserId, 20)
     };
   }
-  throw new Error('記録が見つかりません');
+  // 見つからない場合は「既に削除済み」(通信リトライによる二重実行など)とみなし、成功として最新の統計を返す
+  var spotsGone = getSpots_(actingUserId);
+  var shotsGone = getShots_();
+  var viewYmGone = String(body.viewYm || '') || null;
+  return {
+    id: id, alreadyDeleted: true,
+    myStats: computeMyStats_(spotsGone, shotsGone, actingUserId, 'month', viewYmGone),
+    history: computeHistory_(spotsGone, shotsGone, actingUserId, 20)
+  };
 }
 
 function actionRenameUser_(body) {
@@ -261,6 +307,7 @@ function actionRenameUser_(body) {
       updated++;
     }
   }
+  if (updated > 0) invalidateShotsCache_();
   return { updated: updated, displayName: newName };
 }
 
@@ -285,42 +332,9 @@ function actionGetTeamStats_(body) {
   var isHost = !!requestUserId && requestUserId === HOST_USER_ID;
   var spotId = String(body.spotId || ''); // '' = 合計(全スポット)
 
-  var allSpots = getSpots_(null, true); // 集計用には共通+全員の個人スポットを使う
-  var scopeOf = {}; allSpots.forEach(function (sp) { scopeOf[sp.id] = sp.scope; });
-  var shots = getShots_();
-  var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
-  shots.forEach(function (s) {
-    if (ym && s.ym !== ym) return;
-    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0 });
-    u.name = s.displayName || u.name; // 最新表示名で上書き
-    var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
-    b.makes += s.makes; b.attempts += s.attempts;
-    u.taAll += s.attempts; // 本数ランキング用: マイページ(個人スポット)分も合算する
-    // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
-    if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
-  });
-  // 「スリーポイントランキング」は以下7スポット(共通のみ)の合計で計算する
-  var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
-  var threePointSpotIds = allSpots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; })
-    .map(function (sp) { return sp.id; });
-
-  var allUsers = Object.keys(byUser).map(function (uid) {
-    var u = byUser[uid];
-    var spotStats = allSpots.map(function (sp) {
-      var b = u.spots[sp.id] || { makes: 0, attempts: 0 };
-      return { spotId: sp.id, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
-    });
-    var tpm = 0, tpa = 0;
-    threePointSpotIds.forEach(function (sid) {
-      var b = u.spots[sid] || { makes: 0, attempts: 0 };
-      tpm += b.makes; tpa += b.attempts;
-    });
-    return {
-      userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll,
-      total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) },
-      threePoint: { makes: tpm, attempts: tpa, pct: pct_(tpm, tpa) }
-    };
-  });
+  var agg = getTeamAggregate_(ym); // 重い集計部分は短時間キャッシュ済み
+  var allSpots = agg.allSpots;
+  var allUsers = agg.allUsers;
 
   var pctRanked = allUsers.filter(function (u) { return attemptsOf_(u, spotId) > 0; })
     .sort(function (a, b) { return pctOf_(b, spotId) - pctOf_(a, spotId); });
@@ -505,8 +519,7 @@ function rankSummary_(rankedList, userId, extraFn) {
 // viewerUserId: この人から見える範囲(共通 + 自分の個人スポット)に絞る。
 // includeAllPersonal=true なら全員分の個人スポットも含める(ホストの集計・代理記録用)。
 function getSpots_(viewerUserId, includeAllPersonal) {
-  var sh = getSheet_(SHEET_SPOTS);
-  var rows = sh.getDataRange().getValues();
+  var rows = getSpotsRawRows_();
   var out = [];
   for (var i = 1; i < rows.length; i++) {
     var r = rows[i];
@@ -523,20 +536,119 @@ function getSpots_(viewerUserId, includeAllPersonal) {
   return out;
 }
 
-function getShots_() {
-  var sh = getSheet_(SHEET_SHOTS);
+// Spotsシートの生データをキャッシュから取得(なければ読み込んでキャッシュに保存)。
+// 全ユーザー共通のキャッシュ1本で済むよう、フィルタ前の生の行データをそのまま保存する。
+function getSpotsRawRows_() {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(SPOTS_CACHE_KEY);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) { /* 壊れていたら読み直す */ }
+  }
+  var sh = getSheet_(SHEET_SPOTS);
   var rows = sh.getDataRange().getValues();
+  try { cache.put(SPOTS_CACHE_KEY, JSON.stringify(rows), SPOTS_CACHE_TTL_SEC); } catch (e) { /* サイズ超過などは無視して読み込みは継続 */ }
+  return rows;
+}
+
+// スポットの追加・編集・削除の直後に呼び、古いキャッシュを消して次回すぐ最新化されるようにする
+function invalidateSpotsCache_() {
+  CacheService.getScriptCache().remove(SPOTS_CACHE_KEY);
+}
+
+// チーム統計用の重い集計(全ユーザー×全スポットの内訳・スリーポイント合計)をym単位で短時間キャッシュする。
+// spotId(スポット別確率の絞り込み)は軽い処理なのでキャッシュ対象に含めず、呼び出し側でその都度計算する。
+function getTeamAggregate_(ym) {
+  var cache = CacheService.getScriptCache();
+  var key = TEAMAGG_CACHE_PREFIX + (ym || 'all');
+  var cached = cache.get(key);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) { /* 壊れていたら読み直す */ }
+  }
+
+  var allSpots = getSpots_(null, true); // 共通+全員の個人スポット
+  var scopeOf = {}; allSpots.forEach(function (sp) { scopeOf[sp.id] = sp.scope; });
+  var shots = getShots_();
+  var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
+  shots.forEach(function (s) {
+    if (ym && s.ym !== ym) return;
+    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0 });
+    u.name = s.displayName || u.name; // 最新表示名で上書き
+    var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
+    u.taAll += s.attempts; // 本数ランキング用: マイページ(個人スポット)分も合算する
+    // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
+    if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
+  });
+  // 「スリーポイントランキング」は以下7スポット(共通のみ)の合計で計算する
+  var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
+  var threePointSpotIds = allSpots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; })
+    .map(function (sp) { return sp.id; });
+
+  var allUsers = Object.keys(byUser).map(function (uid) {
+    var u = byUser[uid];
+    var spotStats = allSpots.map(function (sp) {
+      var b = u.spots[sp.id] || { makes: 0, attempts: 0 };
+      return { spotId: sp.id, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+    });
+    var tpm = 0, tpa = 0;
+    threePointSpotIds.forEach(function (sid) {
+      var b = u.spots[sid] || { makes: 0, attempts: 0 };
+      tpm += b.makes; tpa += b.attempts;
+    });
+    return {
+      userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll,
+      total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) },
+      threePoint: { makes: tpm, attempts: tpa, pct: pct_(tpm, tpa) }
+    };
+  });
+
+  var result = { allSpots: allSpots, allUsers: allUsers };
+  try { cache.put(key, JSON.stringify(result), TEAMAGG_CACHE_TTL_SEC); } catch (e) { /* サイズ超過などは無視(キャッシュなしで動作継続) */ }
+  return result;
+}
+
+function getShots_() {
+  var rows = getShotsRawRows_();
   var out = [];
   for (var i = 1; i < rows.length; i++) {
     var r = rows[i];
     if (!r[0]) continue;
     out.push({
-      id: String(r[0]), ts: textCell_(r[1]), ym: ymCell_(r[2]), date: dateCell_(r[3]),
+      // getShotsRawRows_ が返す行は ts/ym/date を既に正規化済みの文字列にしているので String() で十分
+      id: String(r[0]), ts: String(r[1]), ym: String(r[2]), date: String(r[3]),
       userId: String(r[4]), displayName: String(r[5]), spotId: String(r[6]),
       makes: Number(r[7]) || 0, attempts: Number(r[8]) || 0
     });
   }
   return out;
+}
+
+// Shotsシートの生データをキャッシュから取得(なければ読み込んでキャッシュに保存)。
+// キャッシュはJSON化するため、保存前にDate型のセル(ts/ym/date列)を正しい文字列形式へ正規化しておく
+// (そうしないとキャッシュ経由で読んだときに元がDate型だったかどうかの区別が失われてしまうため)。
+function getShotsRawRows_() {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(SHOTS_CACHE_KEY);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) { /* 壊れていたら読み直す */ }
+  }
+  var sh = getSheet_(SHEET_SHOTS);
+  var rows = sh.getDataRange().getValues();
+  var normalized = rows.map(function (r, idx) {
+    if (idx === 0) return r; // ヘッダ行はそのまま
+    var copy = r.slice();
+    copy[1] = textCell_(r[1]);
+    copy[2] = ymCell_(r[2]);
+    copy[3] = dateCell_(r[3]);
+    return copy;
+  });
+  try { cache.put(SHOTS_CACHE_KEY, JSON.stringify(normalized), SHOTS_CACHE_TTL_SEC); } catch (e) { /* サイズ超過などは無視して読み込みは継続 */ }
+  return normalized;
+}
+
+// 記録の保存・更新・削除・表示名変更の直後に呼び、古いキャッシュを消して次回すぐ最新化されるようにする
+function invalidateShotsCache_() {
+  CacheService.getScriptCache().remove(SHOTS_CACHE_KEY);
 }
 
 // スプレッドシートが "2026-07" のような文字列を日付型に自動変換してしまうことがあるため、

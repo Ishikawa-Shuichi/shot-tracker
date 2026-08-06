@@ -323,7 +323,8 @@ var state = {
   addScope: 'personal', // 設定タブでスポット追加する対象
   trendGranularity: 'month', // 推移タブの粒度: 'day' | 'week' | 'month'
   myGranularity: 'month',    // マイタブの粒度: 'day' | 'week' | 'month'
-  movingSpotId: null         // 移動中のスポットID(nullなら移動モードではない)
+  movingSpotId: null,        // 移動中のスポットID(nullなら移動モードではない)
+  saveToken: null            // 新規記録の保存ID。リトライや保存ボタン連打でも同じIDになり二重登録を防ぐ
 };
 
 function currentPageSpots(){
@@ -354,9 +355,12 @@ function onTap(el, handler){
 
 // ---- API ----
 // 電波が弱い場所などで通信が固まったままにならないよう、一定時間で諦めて自動的に再試行する。
+// スポット追加だけは再試行すると二重登録の恐れがあるため自動再試行しない
+// (シュート記録の保存は clientId による重複防止済みなので再試行して安全)。
+var NO_RETRY_ACTIONS = { addSpot: 1 };
 async function api(action, payload, opts){
   opts = opts || {};
-  var maxRetries = opts.retries != null ? opts.retries : 2;
+  var maxRetries = opts.retries != null ? opts.retries : (NO_RETRY_ACTIONS[action] ? 0 : 2);
   var timeoutMs = opts.timeoutMs || 12000;
   var lastErr;
   for(var attempt=0; attempt<=maxRetries; attempt++){
@@ -537,6 +541,7 @@ var rec = { makes:5, attempts:10 };
 function openRecord(sp){
   state.current = sp;
   state.editingShotId = null;
+  state.saveToken = genId();
   rec = { makes:5, attempts:10 };
   document.getElementById('recSpotName').textContent = state.recordingAs
     ? '🏀 '+sp.name+'('+state.recordingAs.name+'さんの記録)'
@@ -603,7 +608,8 @@ onTap(document.getElementById('recSave'), async function(){
         actingUserId: state.user.userId, userId: target.userId, displayName: target.name,
         spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
         date: document.getElementById('recDate').value,
-        viewYm: state.ym
+        viewYm: state.ym,
+        clientId: state.saveToken
       });
       toast('保存しました ✅');
     }
@@ -1078,6 +1084,7 @@ document.querySelectorAll('nav button').forEach(function(b){
 // ================= 小物 =================
 function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+function genId(){ return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10); }
 var toastTimer;
 function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show');},1800); }
