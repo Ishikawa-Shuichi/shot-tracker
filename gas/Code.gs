@@ -14,9 +14,13 @@ var API_TOKEN = '';
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
 
-// 週間MVP自動投稿用: Messaging APIチャネルの「チャネルアクセストークン(長期)」を貼り付ける。
-// 空のままなら自動投稿機能は動かない(それ以外のアプリ機能には影響なし)。
+// 週間MVP自動投稿用: Messaging APIチャネルの「チャネルアクセストークン(長期)」。
+// コード貼り替えで消えないよう、値は「プロジェクトの設定 → スクリプト プロパティ」に
+// プロパティ名 LINE_TOKEN で保存する(ここに直接書いてもよいが、貼り替えのたびに消えるので非推奨)。
 var LINE_CHANNEL_ACCESS_TOKEN = '';
+function getLineToken_() {
+  return PropertiesService.getScriptProperties().getProperty('LINE_TOKEN') || LINE_CHANNEL_ACCESS_TOKEN;
+}
 
 // シート名
 var SHEET_SPOTS = 'Spots';
@@ -796,15 +800,16 @@ function weeklyMvpPost() {
 }
 
 function pushLineMessage_(text) {
+  var token = getLineToken_();
   var groupId = PropertiesService.getScriptProperties().getProperty('LINE_GROUP_ID');
-  if (!LINE_CHANNEL_ACCESS_TOKEN || !groupId) {
-    Logger.log('未設定のため投稿しません(トークン: ' + (LINE_CHANNEL_ACCESS_TOKEN ? '設定済' : '未設定') + ', グループID: ' + (groupId ? '取得済' : '未取得') + ')');
+  if (!token || !groupId) {
+    Logger.log('未設定のため投稿しません(トークン: ' + (token ? '設定済' : '未設定') + ', グループID: ' + (groupId ? '取得済' : '未取得') + ')');
     return false;
   }
   UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
     method: 'post',
     contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + LINE_CHANNEL_ACCESS_TOKEN },
+    headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify({ to: groupId, messages: [{ type: 'text', text: text }] }),
     muteHttpExceptions: true
   });
