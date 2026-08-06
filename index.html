@@ -94,7 +94,7 @@
   </div>
 </div>
 <header>
-  <div class="grow"><h1 id="title">🏀 シュート記録 <span id="streakBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--accent)"></span></h1><div class="who" id="who">読み込み中…</div></div>
+  <div class="grow"><h1 id="title">🏀 シュート記録 <span id="streakBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--accent)"></span> <span id="pendingBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--bad); border-color:var(--bad)"></span></h1><div class="who" id="who">読み込み中…</div></div>
   <select id="ymSel" style="width:130px"></select>
 </header>
 
@@ -330,7 +330,10 @@ var state = {
   myGranularity: 'month',    // マイタブの粒度: 'day' | 'week' | 'month'
   movingSpotId: null,        // 移動中のスポットID(nullなら移動モードではない)
   saveToken: null,           // 新規記録の保存ID。リトライや保存ボタン連打でも同じIDになり二重登録を防ぐ
-  streak: 0                  // 連続練習日数(ヘッダーのバッジに表示)
+  streak: 0,                 // 連続練習日数(ヘッダーのバッジに表示)
+  pendingShots: [],          // オフライン等でまだサーバーに送れていない新規記録のキュー
+  historyItems: [],          // 直近取得した(未送信分を含まない)履歴。未送信分と合成して表示するために保持
+  syncing: false              // 未送信キューを送信中かどうか(二重実行防止)
 };
 
 function currentPageSpots(){
@@ -373,27 +376,111 @@ async function api(action, payload, opts){
   for(var attempt=0; attempt<=maxRetries; attempt++){
     var controller = ('AbortController' in window) ? new AbortController() : null;
     var timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
+    var res;
     try{
-      var res = await fetch(GAS_URL, {
+      res = await fetch(GAS_URL, {
         method:'POST',
         headers:{'Content-Type':'text/plain;charset=utf-8'},
         body: JSON.stringify(Object.assign({action:action, token:API_TOKEN}, payload||{})),
         signal: controller ? controller.signal : undefined
       });
-      if(timer) clearTimeout(timer);
-      var j = await res.json();
-      if(!j.ok) throw new Error(j.error||'エラー');
-      return j.data;
     }catch(e){
+      // fetch自体が失敗(オフライン・タイムアウトなど)。通信エラーとして再試行する。
       if(timer) clearTimeout(timer);
       lastErr = (e && e.name==='AbortError') ? new Error('通信がタイムアウトしました') : e;
-      if(attempt < maxRetries) continue; // 通信エラー/タイムアウトならすぐ次を試す
+      lastErr.isNetworkError = true;
+      if(attempt < maxRetries) continue;
+      throw lastErr;
     }
+    if(timer) clearTimeout(timer);
+    var j = await res.json();
+    if(!j.ok){
+      // サーバーには届いたが明確に拒否された(入力エラーなど)。再試行しても無駄なのですぐ投げる。
+      var appErr = new Error(j.error||'エラー');
+      appErr.isNetworkError = false;
+      throw appErr;
+    }
+    return j.data;
   }
   throw lastErr;
 }
 
+// ---- オフライン記録キュー ----
+// 新規記録の保存が通信エラーで失敗したとき、この端末に一時保存しておき、
+// 電波が戻ったタイミングで自動的にサーバーへ送信する。
+var PENDING_KEY = 'pendingShots_v1';
+function loadPendingFromStorage(){
+  try{ return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); }catch(e){ return []; }
+}
+function savePendingToStorage(){
+  try{ localStorage.setItem(PENDING_KEY, JSON.stringify(state.pendingShots)); }catch(e){ /* 容量超過等は無視 */ }
+}
+function isPendingId(id){
+  return state.pendingShots.some(function(p){ return p.clientId === id; });
+}
+function findPending(id){
+  return state.pendingShots.find(function(p){ return p.clientId === id; }) || null;
+}
+function addPending(item){
+  state.pendingShots.push(item);
+  savePendingToStorage();
+  updatePendingBadge();
+}
+function removePending(clientId){
+  state.pendingShots = state.pendingShots.filter(function(p){ return p.clientId !== clientId; });
+  savePendingToStorage();
+  updatePendingBadge();
+}
+function updatePendingBadge(){
+  var el = document.getElementById('pendingBadge');
+  var n = state.pendingShots.length;
+  if(n > 0){ el.textContent = '📴未送信'+n+'件'; el.classList.remove('hidden'); }
+  else{ el.classList.add('hidden'); }
+}
+// 保存直後、本人の記録ならその場でコート/マイタブ/履歴に反映する(未送信でも見た目には即反映)
+function applyOptimisticShot(payload){
+  if(payload.userId !== state.user.userId) return; // 代理記録はキューに積むだけ(対象者の画面はここでは持っていないため)
+  if(state.myStats && (!state.ym || payload.ym === state.ym)){
+    var spot = state.myStats.spots.find(function(s){ return s.spotId === payload.spotId; });
+    if(spot){ spot.makes += payload.makes; spot.attempts += payload.attempts; spot.pct = spot.attempts>0 ? Math.round(spot.makes/spot.attempts*1000)/10 : 0; }
+    var t = state.myStats.total;
+    t.makes += payload.makes; t.attempts += payload.attempts; t.pct = t.attempts>0 ? Math.round(t.makes/t.attempts*1000)/10 : 0;
+    renderMyStatsView(state.myStats);
+  }
+  renderCourt();
+  renderHistoryList();
+}
+async function trySyncPending(){
+  if(state.syncing || !state.pendingShots.length) return;
+  state.syncing = true;
+  try{
+    var queue = state.pendingShots.slice();
+    var syncedAny = false;
+    for(var i=0; i<queue.length; i++){
+      var item = queue[i];
+      try{
+        await api('recordShot', item, { retries:0, timeoutMs:10000 });
+        removePending(item.clientId);
+        syncedAny = true;
+      }catch(e){
+        if(e.isNetworkError){ break; } // まだオフライン。残りは次回のtrySyncPendingに任せる
+        removePending(item.clientId); // サーバーが拒否した項目は積み直しても直らないため諦める
+      }
+    }
+    if(syncedAny){
+      toast('未送信の記録を送信しました ✅');
+      await refreshAll(); // 端末側の概算値をサーバーの正しい値に合わせ直す
+    }
+  } finally {
+    state.syncing = false;
+  }
+}
+window.addEventListener('online', trySyncPending);
+setInterval(trySyncPending, 20000);
+
 // ---- 起動 ----
+state.pendingShots = loadPendingFromStorage();
+updatePendingBadge();
 (async function(){
   try{
     await liff.init({ liffId: LIFF_ID });
@@ -413,6 +500,7 @@ async function api(action, payload, opts){
   document.getElementById('displayNameInput').value = state.user.displayName;
   try{
     await boot();
+    trySyncPending(); // 起動できた=通信できているタイミングで、未送信キューがあれば送っておく
   }catch(e){
     console.warn('起動時の読み込みに失敗:', e);
     document.getElementById('loadErrorBg').classList.add('open');
@@ -575,7 +663,8 @@ function openEditShot(item){
   state.editingShotId = item.id;
   rec = { makes: item.makes, attempts: item.attempts };
   var who = state.recordingAs ? '・'+state.recordingAs.name+'さん' : '';
-  document.getElementById('recSpotName').textContent = '✏️ '+item.spot+'(編集'+who+')';
+  var pendingTag = item.pending ? '(未送信' + who + ')' : '(編集' + who + ')';
+  document.getElementById('recSpotName').textContent = (item.pending ? '📴 ' : '✏️ ') + item.spot + pendingTag;
   document.getElementById('recDate').value = item.date;
   document.getElementById('recDeleteBtn').classList.remove('hidden');
   renderQuick();
@@ -610,6 +699,27 @@ document.getElementById('recSheetBg').addEventListener('click', function(e){ if(
 onTap(document.getElementById('recSave'), async function(){
   var btn = document.getElementById('recSave');
   var target = state.recordingAs || { userId: state.user.userId, name: state.user.displayName };
+  var dateVal = document.getElementById('recDate').value;
+
+  // 未送信(まだサーバーに届いていない)記録の編集は、通信不要でその場で直す
+  if(state.editingShotId && isPendingId(state.editingShotId)){
+    var p = findPending(state.editingShotId);
+    var diffMakes = rec.makes - p.makes, diffAttempts = rec.attempts - p.attempts;
+    p.makes = rec.makes; p.attempts = rec.attempts; p.date = dateVal; p.ym = dateVal.slice(0,7);
+    savePendingToStorage();
+    closeRecord();
+    toast('未送信の記録を更新しました');
+    if(p.userId===state.user.userId && state.myStats && (!state.ym || p.ym===state.ym)){
+      var editSpot = state.myStats.spots.find(function(s){ return s.spotId===p.spotId; });
+      if(editSpot){ editSpot.makes+=diffMakes; editSpot.attempts+=diffAttempts; editSpot.pct = editSpot.attempts>0?Math.round(editSpot.makes/editSpot.attempts*1000)/10:0; }
+      var et = state.myStats.total;
+      et.makes+=diffMakes; et.attempts+=diffAttempts; et.pct = et.attempts>0?Math.round(et.makes/et.attempts*1000)/10:0;
+      renderMyStatsView(state.myStats);
+    }
+    renderHistoryList(); renderCourt();
+    return;
+  }
+
   try{
     btn.disabled=true;
     var res;
@@ -617,19 +727,32 @@ onTap(document.getElementById('recSave'), async function(){
       res = await api('updateShot', {
         shotId: state.editingShotId, actingUserId: state.user.userId,
         makes: rec.makes, attempts: rec.attempts,
-        date: document.getElementById('recDate').value,
+        date: dateVal,
         viewYm: state.ym
       });
       toast('更新しました ✅');
     }else{
       var prevStreak = state.streak;
-      res = await api('recordShot', {
+      var payload = {
         actingUserId: state.user.userId, userId: target.userId, displayName: target.name,
         spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
-        date: document.getElementById('recDate').value,
+        date: dateVal,
         viewYm: state.ym,
         clientId: state.saveToken
-      });
+      };
+      try{
+        res = await api('recordShot', payload);
+      }catch(e){
+        if(!e.isNetworkError) throw e; // 入力エラー等はそのまま上のcatchで表示
+        // オフライン: 端末に貯めて後で自動送信する
+        payload.ym = dateVal.slice(0,7);
+        payload.spotName = state.current.name;
+        addPending(payload);
+        closeRecord();
+        toast('📴 オフラインで保存しました(電波が戻ったら自動送信します)');
+        applyOptimisticShot(payload);
+        return;
+      }
       // ストリークが伸びた瞬間(=その日最初の記録)は少しお祝いする
       toast(res.streak != null && res.streak > prevStreak
         ? '保存しました ✅ 🔥'+res.streak+'日連続！'
@@ -647,9 +770,33 @@ onTap(document.getElementById('recSave'), async function(){
 onTap(document.getElementById('recDeleteBtn'), async function(){
   if(!confirm('この記録を削除しますか？')) return;
   var btn = document.getElementById('recDeleteBtn');
+
+  // 未送信の記録はキューから消すだけ(サーバーには元々届いていない)
+  if(state.editingShotId && isPendingId(state.editingShotId)){
+    var delP = findPending(state.editingShotId);
+    removePending(state.editingShotId);
+    closeRecord();
+    toast('未送信の記録を取り消しました');
+    if(delP.userId===state.user.userId && state.myStats && (!state.ym || delP.ym===state.ym)){
+      var delSpot = state.myStats.spots.find(function(s){ return s.spotId===delP.spotId; });
+      if(delSpot){ delSpot.makes-=delP.makes; delSpot.attempts-=delP.attempts; delSpot.pct = delSpot.attempts>0?Math.round(delSpot.makes/delSpot.attempts*1000)/10:0; }
+      var dt = state.myStats.total;
+      dt.makes-=delP.makes; dt.attempts-=delP.attempts; dt.pct = dt.attempts>0?Math.round(dt.makes/dt.attempts*1000)/10:0;
+      renderMyStatsView(state.myStats);
+    }
+    renderHistoryList(); renderCourt();
+    return;
+  }
+
   try{
     btn.disabled=true;
-    var res = await api('deleteShot', { shotId: state.editingShotId, actingUserId: state.user.userId, viewYm: state.ym });
+    var res;
+    try{
+      res = await api('deleteShot', { shotId: state.editingShotId, actingUserId: state.user.userId, viewYm: state.ym });
+    }catch(e){
+      if(e.isNetworkError){ toast('オフラインのため削除できません。電波の良い場所でお試しください'); return; }
+      throw e;
+    }
     closeRecord();
     toast('削除しました');
     applyMyStats(res.myStats);
@@ -709,11 +856,25 @@ function refreshMyTab(){
 
 // ================= 履歴 =================
 function applyHistory(items){
+  state.historyItems = items; // 未送信分と合成するため、サーバー確定分を保持しておく
+  renderHistoryList();
+}
+function renderHistoryList(){
+  // 未送信の記録は「自分の履歴」表示中のみ上に重ねて見せる(代理記録の対象者の履歴を見ている間は出さない)
+  var pendingView = state.recordingAs ? [] : state.pendingShots
+    .filter(function(p){ return p.userId === state.user.userId; })
+    .slice().reverse()
+    .map(function(p){
+      return { id:p.clientId, date:p.date, ym:p.ym, spotId:p.spotId, spot:p.spotName,
+        makes:p.makes, attempts:p.attempts, pct: p.attempts>0 ? Math.round(p.makes/p.attempts*1000)/10 : 0, pending:true };
+    });
+  var merged = pendingView.concat(state.historyItems);
   var host=document.getElementById('historyList'); host.innerHTML='';
-  document.getElementById('histCount').textContent = items.length? '':'まだありません';
-  items.forEach(function(it){
+  document.getElementById('histCount').textContent = merged.length? '':'まだありません';
+  merged.forEach(function(it){
     var el=document.createElement('div'); el.className='listitem'; el.style.cursor='pointer';
-    el.innerHTML='<span>'+esc(it.spot)+' <span class="muted" style="font-size:12px">'+it.date+'</span></span>'
+    var tag = it.pending ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>' : '';
+    el.innerHTML='<span>'+esc(it.spot)+' <span class="muted" style="font-size:12px">'+it.date+'</span>'+tag+'</span>'
       +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span> <span class="muted">›</span></span>';
     onTap(el, function(){ openEditShot(it); });
     host.appendChild(el);
