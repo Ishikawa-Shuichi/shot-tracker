@@ -4,8 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>シュート記録</title>
+<!-- 接続先へ事前にTLS接続しておき、スマホ回線での初回通信を速くする -->
+<link rel="preconnect" href="https://script.google.com" crossorigin>
+<link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<!-- グラフ部品は推移タブでしか使わないため、後回し読み込み(defer)にして起動を速くする -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4" defer></script>
 <style>
   :root{
     --bg:#0f1216; --card:#191f26; --card2:#222a33; --line:#2c3540;
@@ -362,7 +367,8 @@ var NO_RETRY_ACTIONS = { addSpot: 1 };
 async function api(action, payload, opts){
   opts = opts || {};
   var maxRetries = opts.retries != null ? opts.retries : (NO_RETRY_ACTIONS[action] ? 0 : 2);
-  var timeoutMs = opts.timeoutMs || 12000;
+  // GASは久しぶりのアクセス時に起動へ10秒前後かかることがあるため、短すぎると無駄な再試行になる
+  var timeoutMs = opts.timeoutMs || 15000;
   var lastErr;
   for(var attempt=0; attempt<=maxRetries; attempt++){
     var controller = ('AbortController' in window) ? new AbortController() : null;
@@ -465,6 +471,8 @@ async function refreshAll(){
   await Promise.all([ loadMyStats(), loadHistory(), refreshProxyStats() ]);
   renderCourt();     // マイ確率をコートに反映
   var active = document.querySelector('nav button.active').dataset.tab;
+  // マイタブを週/日表示で見ている場合は、その粒度のまま表示を取り直す(月表示に戻さない)
+  if(active==='my' && state.myGranularity!=='month') loadMyTabCustomStats();
   if(active==='team') loadTeam();
   if(active==='trend') loadTrend();
   if(active==='settings') renderSpotList();
@@ -844,9 +852,12 @@ function renderTeamUser(userId){
   var u = d.users.find(function(x){ return x.userId===userId; });
   var host = document.getElementById('teamUserBody');
   if(!u){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
-  var spotName = {}; d.spots.forEach(function(sp){ spotName[sp.spotId]=sp.name; });
+  var spotName = {}; var spotScope = {};
+  d.spots.forEach(function(sp){ spotName[sp.spotId]=sp.name; spotScope[sp.spotId]=sp.scope; });
   var html = '<div class="row"><b class="grow">'+esc(u.name)+'</b><span class="pill">合計 '+u.total.makes+'/'+u.total.attempts+' ('+u.total.pct+'%)</span></div>';
   u.spots.forEach(function(s){
+    // 個人スポットは記録がある行だけ表示(全員分の個人スポットで0/0の行が並ばないように)
+    if(spotScope[s.spotId]==='personal' && !(s.attempts>0)) return;
     html += '<div style="margin:10px 0">'
       + '<div class="row"><span class="grow">'+esc(spotName[s.spotId]||'?')+'</span>'
       + '<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
@@ -896,17 +907,20 @@ async function loadTrend(){
   var d = await api('getTrend', { spotId: spotId, userId: state.user.userId, targetUserId: targetUserId, granularity: g });
   var labels=d.points.map(function(p){ return formatTrendKey(p.key, g); });
   var data=d.points.map(function(p){ return p.pct; });
-  if(state.chart) state.chart.destroy();
-  var ctx=document.getElementById('trendChart');
-  state.chart=new Chart(ctx,{
-    type:'line',
-    data:{ labels:labels, datasets:[{ label:'確率(%)', data:data,
-      borderColor:'#ff7a1a', backgroundColor:'rgba(255,122,26,.15)', fill:true, tension:.3,
-      pointRadius:4, pointBackgroundColor:'#ff7a1a' }]},
-    options:{ responsive:true, plugins:{legend:{display:false}},
-      scales:{ y:{min:0,max:100, ticks:{color:'#9aa7b4'}, grid:{color:'#2c3540'}},
-               x:{ticks:{color:'#9aa7b4'}, grid:{display:false}} } }
-  });
+  // グラフ部品(Chart.js)が読み込めていない場合(電波不良など)でも、下の表だけは表示する
+  if(typeof Chart !== 'undefined'){
+    if(state.chart) state.chart.destroy();
+    var ctx=document.getElementById('trendChart');
+    state.chart=new Chart(ctx,{
+      type:'line',
+      data:{ labels:labels, datasets:[{ label:'確率(%)', data:data,
+        borderColor:'#ff7a1a', backgroundColor:'rgba(255,122,26,.15)', fill:true, tension:.3,
+        pointRadius:4, pointBackgroundColor:'#ff7a1a' }]},
+      options:{ responsive:true, plugins:{legend:{display:false}},
+        scales:{ y:{min:0,max:100, ticks:{color:'#9aa7b4'}, grid:{color:'#2c3540'}},
+                 x:{ticks:{color:'#9aa7b4'}, grid:{display:false}} } }
+    });
+  }
   var host=document.getElementById('trendTable');
   if(!d.points.length){ host.innerHTML='<div class="muted center" style="padding:10px">記録がありません</div>'; return; }
   var periodLabel = g==='day'?'日':g==='week'?'週':'月';
@@ -933,7 +947,10 @@ function renderProxyUI(){
     var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o);
   });
   var addOpt = document.createElement('option'); addOpt.value='__add__'; addOpt.textContent='+ 新しい人を追加...'; sel.appendChild(addOpt);
-  if(prev) sel.value=prev;
+  // 選択状態は state.recordingAs を正とする(「+ 新しい人を追加...」が選択されたままにならないように)
+  if(state.recordingAs){ sel.value = state.recordingAs.userId; }
+  else if(prev && prev !== '__add__'){ sel.value = prev; }
+  else { sel.value = ''; }
   updateProxyHint();
 }
 document.getElementById('proxySel').addEventListener('change', async function(){
@@ -942,8 +959,12 @@ document.getElementById('proxySel').addEventListener('change', async function(){
     var name = prompt('記録対象の名前を入力してください(例: 田中)');
     if(!name || !name.trim()){ sel.value = state.recordingAs ? state.recordingAs.userId : ''; return; }
     name = name.trim();
-    var member = { userId: 'proxy-' + Math.random().toString(36).slice(2,10), name: name };
-    state.members.push(member);
+    // 同じ名前の人が既にいれば新規作成せずその人を選ぶ(同一人物の記録が別人として分裂しないように)
+    var member = state.members.find(function(m){ return m.name === name; });
+    if(!member){
+      member = { userId: 'proxy-' + Math.random().toString(36).slice(2,10), name: name };
+      state.members.push(member);
+    }
     state.recordingAs = member;
     renderProxyUI();
     await refreshProxyStats();

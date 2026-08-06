@@ -399,8 +399,9 @@ function actionGetTeamStats_(body) {
     .map(function (s) { return { spotId: s.id, name: s.name }; });
   return {
     ym: ym, spots: spotsMetaShared,
+    // 表示に使うのは名前と本数だけなので、LINEユーザーIDは渡さない
     countRanking: countRanked.map(function (u) {
-      return { userId: u.userId, name: u.name, attempts: u.totalAttemptsAll };
+      return { name: u.name, attempts: u.totalAttemptsAll };
     }),
     pctRank: rankSummary_(pctRanked, requestUserId, function (u) {
       var s = spotStatOf_(u, spotId);
