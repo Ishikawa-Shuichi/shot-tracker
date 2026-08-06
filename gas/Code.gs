@@ -14,6 +14,10 @@ var API_TOKEN = '';
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
 
+// 週間MVP自動投稿用: Messaging APIチャネルの「チャネルアクセストークン(長期)」を貼り付ける。
+// 空のままなら自動投稿機能は動かない(それ以外のアプリ機能には影響なし)。
+var LINE_CHANNEL_ACCESS_TOKEN = '';
+
 // シート名
 var SHEET_SPOTS = 'Spots';
 var SHEET_SHOTS = 'Shots';
@@ -53,6 +57,9 @@ function doPost(e) {
     if (e && e.postData && e.postData.contents) {
       body = JSON.parse(e.postData.contents);
     }
+    // LINEプラットフォームからのWebhook(週間MVP投稿用のグループID取得)。
+    // アプリからの呼び出し(action形式)とはbodyの形が違うため、ここで振り分ける。
+    if (body.events) return handleLineWebhook_(body);
     if (API_TOKEN && body.token !== API_TOKEN) {
       return json_({ ok: false, error: 'unauthorized' });
     }
@@ -96,7 +103,8 @@ function actionInit_(body) {
     serverTime: new Date().toISOString(),
     isHost: isHost,
     myStats: computeMyStats_(spots, shots, userId, 'month', ym),
-    history: computeHistory_(spots, shots, userId, 20)
+    history: computeHistory_(spots, shots, userId, 20),
+    streak: computeStreak_(shots, userId)
   };
   if (isHost) result.members = uniqueMembers_(shots);
   return result;
@@ -202,7 +210,8 @@ function actionRecordShot_(body) {
         return {
           id: clientId, ym: existing[ei].ym, duplicate: true,
           myStats: computeMyStats_(spotsDup, existing, actingUserId, 'month', viewYmDup),
-          history: computeHistory_(spotsDup, existing, actingUserId, 20)
+          history: computeHistory_(spotsDup, existing, actingUserId, 20),
+          streak: computeStreak_(existing, actingUserId)
         };
       }
     }
@@ -221,7 +230,8 @@ function actionRecordShot_(body) {
   return {
     id: id, ym: ym,
     myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
-    history: computeHistory_(spots, shots, actingUserId, 20)
+    history: computeHistory_(spots, shots, actingUserId, 20),
+    streak: computeStreak_(shots, actingUserId)
   };
 }
 
@@ -255,7 +265,8 @@ function actionUpdateShot_(body) {
     return {
       id: id,
       myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
-      history: computeHistory_(spots, shots, actingUserId, 20)
+      history: computeHistory_(spots, shots, actingUserId, 20),
+      streak: computeStreak_(shots, actingUserId)
     };
   }
   throw new Error('記録が見つかりません');
@@ -279,7 +290,8 @@ function actionDeleteShot_(body) {
     return {
       id: id,
       myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
-      history: computeHistory_(spots, shots, actingUserId, 20)
+      history: computeHistory_(spots, shots, actingUserId, 20),
+      streak: computeStreak_(shots, actingUserId)
     };
   }
   // 見つからない場合は「既に削除済み」(通信リトライによる二重実行など)とみなし、成功として最新の統計を返す
@@ -289,7 +301,8 @@ function actionDeleteShot_(body) {
   return {
     id: id, alreadyDeleted: true,
     myStats: computeMyStats_(spotsGone, shotsGone, actingUserId, 'month', viewYmGone),
-    history: computeHistory_(spotsGone, shotsGone, actingUserId, 20)
+    history: computeHistory_(spotsGone, shotsGone, actingUserId, 20),
+    streak: computeStreak_(shotsGone, actingUserId)
   };
 }
 
@@ -471,6 +484,17 @@ function computeHistory_(spots, shots, userId, limit) {
   return mine.slice(0, limit).map(function (s) {
     return { id: s.id, date: s.date, ym: s.ym, spotId: s.spotId, spot: spotName[s.spotId] || '(削除済)', makes: s.makes, attempts: s.attempts, pct: pct_(s.makes, s.attempts) };
   });
+}
+
+// 連続練習日数: 今日から(今日まだ記録していなければ昨日から)さかのぼり、記録のある日が何日続いているか
+function computeStreak_(shots, userId) {
+  var days = {};
+  shots.forEach(function (s) { if (s.userId === userId) days[s.date] = true; });
+  var cur = new Date();
+  if (!days[dateOf_(cur)]) cur.setDate(cur.getDate() - 1); // 今日まだ打っていなくても昨日までの連続は生きている
+  var streak = 0;
+  while (days[dateOf_(cur)]) { streak++; cur.setDate(cur.getDate() - 1); }
+  return streak;
 }
 
 // 記録が存在する全ユーザーの一覧(ホストの代理記録の対象選択に使用)
@@ -716,4 +740,73 @@ function setup() {
   getSheet_(SHEET_SPOTS);
   getSheet_(SHEET_SHOTS);
   Logger.log('初期化完了');
+}
+
+// ===== 週間MVP自動投稿(LINEグループへ) ============================
+
+// LINE Webhook: グループにbotが招待された/グループで誰かが発言したときにグループIDを保存する。
+// (自動投稿の宛先として使う。チームのグループ1つを想定し、最後に見たグループIDを保持する)
+function handleLineWebhook_(body) {
+  try {
+    (body.events || []).forEach(function (ev) {
+      var src = ev.source || {};
+      if (src.type === 'group' && src.groupId) {
+        PropertiesService.getScriptProperties().setProperty('LINE_GROUP_ID', src.groupId);
+      }
+    });
+  } catch (err) { /* Webhookは常に200を返す */ }
+  return json_({ ok: true });
+}
+
+/** 手動実行用: 毎週日曜20時台に weeklyMvpPost を自動実行するトリガーを設定する(一度だけ実行) */
+function setupWeeklyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'weeklyMvpPost') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('weeklyMvpPost').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(20).create();
+  Logger.log('毎週日曜20時台の自動投稿トリガーを設定しました');
+}
+
+// 今週(月曜〜今日)のシュート本数トップ3をグループに投稿する。
+// 確率は含めない(本数だけなら誰でも上位を狙えるため)。今週の記録がなければ投稿しない。
+function weeklyMvpPost() {
+  var today = dateOf_(new Date());
+  var monday = weekKeyOf_(today);
+  var shots = getShots_();
+  var byUser = {};
+  var teamTotal = 0;
+  shots.forEach(function (s) {
+    if (s.date < monday || s.date > today) return;
+    var u = byUser[s.userId] || (byUser[s.userId] = { name: s.displayName, attempts: 0 });
+    u.name = s.displayName || u.name;
+    u.attempts += s.attempts;
+    teamTotal += s.attempts;
+  });
+  var ranked = Object.keys(byUser).map(function (k) { return byUser[k]; })
+    .sort(function (a, b) { return b.attempts - a.attempts; });
+  if (!ranked.length) return;
+
+  var medals = ['🥇', '🥈', '🥉'];
+  var lines = ['📣 今週のシュート本数ランキング'];
+  ranked.slice(0, 3).forEach(function (u, i) { lines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
+  lines.push('');
+  lines.push('チーム合計: ' + teamTotal + '本');
+  lines.push('今週もお疲れさまでした！🏀');
+  pushLineMessage_(lines.join('\n'));
+}
+
+function pushLineMessage_(text) {
+  var groupId = PropertiesService.getScriptProperties().getProperty('LINE_GROUP_ID');
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !groupId) {
+    Logger.log('未設定のため投稿しません(トークン: ' + (LINE_CHANNEL_ACCESS_TOKEN ? '設定済' : '未設定') + ', グループID: ' + (groupId ? '取得済' : '未取得') + ')');
+    return false;
+  }
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + LINE_CHANNEL_ACCESS_TOKEN },
+    payload: JSON.stringify({ to: groupId, messages: [{ type: 'text', text: text }] }),
+    muteHttpExceptions: true
+  });
+  return true;
 }
