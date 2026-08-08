@@ -791,10 +791,9 @@ function setupWeeklyTrigger() {
 // 確率は含めない(本数だけなら誰でも上位を狙える)。今週の記録がなければ何もしない。
 // 注意: LINEの仕様上、botを「友だち追加」していない人には個別メッセージは届かない。
 // 今週(月曜〜今日)のユーザーごとの本数を集計する(投稿・閲覧の両方から使う共通ロジック)
-function computeWeeklyRanking_() {
+function computeWeeklyRanking_(shots) {
   var today = dateOf_(new Date());
   var monday = weekKeyOf_(today);
-  var shots = getShots_();
   var byUser = {}; // userId -> {name, attempts}
   var teamTotal = 0;
   shots.forEach(function (s) {
@@ -811,30 +810,41 @@ function computeWeeklyRanking_() {
 
 // 「見るだけ」用(通知は送らない)。今週のランキングをアプリ側から確認したいときに使う。
 function actionGetWeeklyRanking_(body) {
-  var r = computeWeeklyRanking_();
+  var r = computeWeeklyRanking_(getShots_());
   return { weekStart: r.weekStart, today: r.today, teamTotal: r.teamTotal, ranked: r.ranked };
 }
 
 function weeklyMvpPost() {
-  var r = computeWeeklyRanking_();
-  var ranked = r.ranked;
+  var shots = getShots_();
+  var r = computeWeeklyRanking_(shots);
+  var ranked = r.ranked; // 今週シュートがあった人のみ
   var teamTotal = r.teamTotal;
-  if (!ranked.length) return;
 
   var medals = ['🥇', '🥈', '🥉'];
   var rankingLines = ['📣 今週のシュート本数ランキング'];
-  ranked.slice(0, 3).forEach(function (u, i) { rankingLines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
-  rankingLines.push('');
-  rankingLines.push('チーム合計: ' + teamTotal + '本');
+  if (ranked.length) {
+    ranked.slice(0, 3).forEach(function (u, i) { rankingLines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
+    rankingLines.push('');
+    rankingLines.push('チーム合計: ' + teamTotal + '本');
+  } else {
+    rankingLines.push('今週はまだ誰も記録していません');
+  }
   var rankingText = rankingLines.join('\n');
+  var attemptsByUser = {};
+  ranked.forEach(function (u) { attemptsByUser[u.userId] = u.attempts; });
 
-  // 個人向けメッセージには順位を入れない(下位の人にとってやる気を削ぐ要因になるため、
-  // 自分の本数だけを前向きに伝える。ランキング上位3人の名前は全員共通で見えるが、それ以外の順位は出さない)
+  // これまでに一度でも記録したことがある「既知のメンバー全員」に送る(今週0本の人も含む)。
+  // 目的はトーク履歴を上げてアプリの存在を思い出してもらうことなので、0本の人こそ送る意味がある。
+  // ただし0本の人への文面は責める内容にせず、軽く誘うだけに留める(順位も入れない)。
+  var allMembers = uniqueMembers_(shots);
   var failed = [];
-  ranked.forEach(function (u) {
-    var personal = 'あなたは今週 ' + u.attempts + '本 シュートを打ちました！';
+  allMembers.forEach(function (m) {
+    var myAttempts = attemptsByUser[m.userId] || 0;
+    var personal = myAttempts > 0
+      ? 'あなたは今週 ' + myAttempts + '本 シュートを打ちました！'
+      : '今週はまだ記録がありません。少しでも練習したら記録してみましょう🏀';
     var text = rankingText + '\n\n' + personal + '\n今週もお疲れさまでした！🏀';
-    if (!pushLineMessageTo_(u.userId, text)) failed.push(u.name);
+    if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
   });
   if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
 }
