@@ -713,6 +713,8 @@ function getSheet_(name) {
       });
     } else if (name === SHEET_SHOTS) {
       sh.appendRow(['id', 'timestamp', 'ym', 'date', 'userId', 'displayName', 'spotId', 'makes', 'attempts']);
+    } else if (name === 'KnownUsers') {
+      sh.appendRow(['userId', 'displayName', 'firstSeenAt']);
     }
   }
   return sh;
@@ -763,7 +765,8 @@ function setup() {
 
 // ===== 週間MVP自動投稿(個別チャットへ) ============================
 
-// LINE Webhook: 現状グループIDの取得以外には使っていないが、将来グループ投稿に戻す場合に備えて残す。
+// LINE Webhook: グループIDの記録に加えて、botに何かメッセージを送ったことがある人を
+// 「KnownUsers」シートに記録する(アプリを一度も使っていなくても週間報告を送れるようにするため)。
 function handleLineWebhook_(body) {
   try {
     (body.events || []).forEach(function (ev) {
@@ -771,9 +774,44 @@ function handleLineWebhook_(body) {
       if (src.type === 'group' && src.groupId) {
         PropertiesService.getScriptProperties().setProperty('LINE_GROUP_ID', src.groupId);
       }
+      if (src.userId) registerKnownUser_(src.userId);
     });
   } catch (err) { /* Webhookは常に200を返す */ }
   return json_({ ok: true });
+}
+
+// 送信対象として新しいuserIdを記録する(初回だけLINEのプロフィールAPIで表示名を取得する)
+function registerKnownUser_(userId) {
+  var sh = getSheet_('KnownUsers');
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === userId) return; // 登録済み
+  }
+  sh.appendRow([userId, fetchLineDisplayName_(userId) || '(名前未取得)', new Date().toISOString()]);
+}
+
+function fetchLineDisplayName_(userId) {
+  var token = getLineToken_();
+  if (!token) return null;
+  try {
+    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/profile/' + userId, {
+      headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) return null;
+    return JSON.parse(res.getContentText()).displayName || null;
+  } catch (e) { return null; }
+}
+
+// botにメッセージを送ったことがある人の一覧(アプリを使ったことがない人を含む)
+function getKnownUsers_() {
+  var sh = getSheet_('KnownUsers');
+  var rows = sh.getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (!rows[i][0]) continue;
+    out.push({ userId: String(rows[i][0]), name: String(rows[i][1]) });
+  }
+  return out;
 }
 
 /** 手動実行用: 毎週日曜20時台に weeklyMvpPost を自動実行するトリガーを設定する(一度だけ実行) */
@@ -833,10 +871,15 @@ function weeklyMvpPost() {
   var attemptsByUser = {};
   ranked.forEach(function (u) { attemptsByUser[u.userId] = u.attempts; });
 
-  // これまでに一度でも記録したことがある「既知のメンバー全員」に送る(今週0本の人も含む)。
+  // 送信先 = 「記録したことがある人」+「botにメッセージを送ったことがある人」の合算(重複はuserIdで排除)。
+  // アプリを一度も開いていなくても、botに一言でも送ったことがあれば対象に含められる。
+  // (「友だち追加しただけで一度も何もしていない人」はLINEの仕様上どうしても特定できない)
   // 目的はトーク履歴を上げてアプリの存在を思い出してもらうことなので、0本の人こそ送る意味がある。
   // ただし0本の人への文面は責める内容にせず、軽く誘うだけに留める(順位も入れない)。
-  var allMembers = uniqueMembers_(shots);
+  var memberMap = {};
+  getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+  uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; }); // アプリの表示名の方が新しい可能性が高いので優先
+  var allMembers = Object.keys(memberMap).map(function (uid) { return { userId: uid, name: memberMap[uid] }; });
   var failed = [];
   allMembers.forEach(function (m) {
     var myAttempts = attemptsByUser[m.userId] || 0;
