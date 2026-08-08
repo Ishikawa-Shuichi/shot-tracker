@@ -895,6 +895,7 @@ function fillSpotSelectors(){
     // チームのランキング系セレクタは共通スポットのみ(個人スポットを比較対象にしない)。推移は自分の全スポット対象。
     var list = (id==='trendSpotSel') ? state.spots : state.spots.filter(function(sp){ return sp.scope !== 'personal'; });
     if(id==='teamSpotSel' || id==='teamSpotSelMe'){ var all=document.createElement('option'); all.value=''; all.textContent='合計(全スポット)'; sel.appendChild(all); }
+    if(id==='trendSpotSel'){ var tp=document.createElement('option'); tp.value='__threepoint__'; tp.textContent='スリーポイント合計'; sel.appendChild(tp); }
     list.forEach(function(sp){ var o=document.createElement('option'); o.value=sp.id; o.textContent=sp.name; sel.appendChild(o); });
     if(prev) sel.value=prev;
   });

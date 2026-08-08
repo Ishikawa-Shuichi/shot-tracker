@@ -26,6 +26,10 @@ function getLineToken_() {
 var SHEET_SPOTS = 'Spots';
 var SHEET_SHOTS = 'Shots';
 
+// 「スリーポイントランキング」「推移のスリーポイント合計」は以下7スポット(共通のみ)の合計で計算する
+var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
+var THREE_POINT_SENTINEL = '__threepoint__'; // 推移タブでスポットIDの代わりに使う特別な値
+
 // スポット一覧はめったに変わらないため、一定時間キャッシュして毎回の読み込みを省略する。
 var SPOTS_CACHE_KEY = 'spots_raw_v1';
 var SPOTS_CACHE_TTL_SEC = 300; // 5分
@@ -421,6 +425,7 @@ function actionGetTeamStats_(body) {
 function actionGetTrend_(body) {
   // 指定スポットの推移。granularity: 'day' | 'week' | 'month'(既定)。
   // targetUserId 指定で個人、空ならチーム合算(チーム合算・他人の推移はホストのみ閲覧可)。
+  // spotId が THREE_POINT_SENTINEL の場合は、スリーポイント7スポットの合計で集計する。
   var spotId = String(body.spotId || '');
   var requesterId = String(body.userId || '');
   var targetUserId = String(body.targetUserId || '') || null;
@@ -429,10 +434,20 @@ function actionGetTrend_(body) {
     throw new Error('この推移を見る権限がありません');
   }
   var granularity = String(body.granularity || 'month');
+
+  var threePointIds = null;
+  if (spotId === THREE_POINT_SENTINEL) {
+    var allSpots = getSpots_(null, true);
+    threePointIds = {};
+    allSpots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; })
+      .forEach(function (sp) { threePointIds[sp.id] = true; });
+  }
+
   var shots = getShots_();
   var byKey = {};
   shots.forEach(function (s) {
-    if (s.spotId !== spotId) return;
+    var matches = threePointIds ? !!threePointIds[s.spotId] : (s.spotId === spotId);
+    if (!matches) return;
     if (targetUserId && s.userId !== targetUserId) return;
     var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;
     var b = byKey[key] || (byKey[key] = { makes: 0, attempts: 0 });
@@ -608,8 +623,6 @@ function getTeamAggregate_(ym) {
     // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
     if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
   });
-  // 「スリーポイントランキング」は以下7スポット(共通のみ)の合計で計算する
-  var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
   var threePointSpotIds = allSpots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; })
     .map(function (sp) { return sp.id; });
 
