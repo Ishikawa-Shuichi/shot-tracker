@@ -828,9 +828,11 @@ function weeklyMvpPost() {
   rankingLines.push('チーム合計: ' + teamTotal + '本');
   var rankingText = rankingLines.join('\n');
 
+  // 個人向けメッセージには順位を入れない(下位の人にとってやる気を削ぐ要因になるため、
+  // 自分の本数だけを前向きに伝える。ランキング上位3人の名前は全員共通で見えるが、それ以外の順位は出さない)
   var failed = [];
-  ranked.forEach(function (u, i) {
-    var personal = 'あなたは今週 ' + u.attempts + '本(' + (i + 1) + '位/' + ranked.length + '人中)でした。';
+  ranked.forEach(function (u) {
+    var personal = 'あなたは今週 ' + u.attempts + '本 シュートを打ちました！';
     var text = rankingText + '\n\n' + personal + '\n今週もお疲れさまでした！🏀';
     if (!pushLineMessageTo_(u.userId, text)) failed.push(u.name);
   });
