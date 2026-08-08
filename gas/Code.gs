@@ -87,6 +87,7 @@ function doPost(e) {
       case 'getTeamStats':data = actionGetTeamStats_(body); break;
       case 'getTrend':    data = actionGetTrend_(body); break;
       case 'getHistory':  data = actionGetHistory_(body); break;
+      case 'getWeeklyRanking': data = actionGetWeeklyRanking_(body); break;
       default:
         return json_({ ok: false, error: 'unknown action: ' + action });
     }
@@ -789,7 +790,8 @@ function setupWeeklyTrigger() {
 // (グループ投稿ではなく個別チャットに送ることで、各自のトーク履歴の上位に来るようにする)
 // 確率は含めない(本数だけなら誰でも上位を狙える)。今週の記録がなければ何もしない。
 // 注意: LINEの仕様上、botを「友だち追加」していない人には個別メッセージは届かない。
-function weeklyMvpPost() {
+// 今週(月曜〜今日)のユーザーごとの本数を集計する(投稿・閲覧の両方から使う共通ロジック)
+function computeWeeklyRanking_() {
   var today = dateOf_(new Date());
   var monday = weekKeyOf_(today);
   var shots = getShots_();
@@ -802,10 +804,22 @@ function weeklyMvpPost() {
     u.attempts += s.attempts;
     teamTotal += s.attempts;
   });
-  var userIds = Object.keys(byUser);
-  if (!userIds.length) return;
-  var ranked = userIds.map(function (uid) { return { userId: uid, name: byUser[uid].name, attempts: byUser[uid].attempts }; })
+  var ranked = Object.keys(byUser).map(function (uid) { return { userId: uid, name: byUser[uid].name, attempts: byUser[uid].attempts }; })
     .sort(function (a, b) { return b.attempts - a.attempts; });
+  return { weekStart: monday, today: today, ranked: ranked, teamTotal: teamTotal };
+}
+
+// 「見るだけ」用(通知は送らない)。今週のランキングをアプリ側から確認したいときに使う。
+function actionGetWeeklyRanking_(body) {
+  var r = computeWeeklyRanking_();
+  return { weekStart: r.weekStart, today: r.today, teamTotal: r.teamTotal, ranked: r.ranked };
+}
+
+function weeklyMvpPost() {
+  var r = computeWeeklyRanking_();
+  var ranked = r.ranked;
+  var teamTotal = r.teamTotal;
+  if (!ranked.length) return;
 
   var medals = ['🥇', '🥈', '🥉'];
   var rankingLines = ['📣 今週のシュート本数ランキング'];
