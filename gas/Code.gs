@@ -780,8 +780,9 @@ function setupWeeklyTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'weeklyMvpPost') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('weeklyMvpPost').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(20).create();
-  Logger.log('毎週日曜20時台の自動投稿トリガーを設定しました');
+  // atHour+nearMinuteで21:45に近い時刻を狙う(GASの時刻トリガーは分単位の完全な指定はできないため、目安)
+  ScriptApp.newTrigger('weeklyMvpPost').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(21).nearMinute(45).create();
+  Logger.log('毎週日曜21:45頃の自動投稿トリガーを設定しました');
 }
 
 // 今週(月曜〜今日)のシュート本数ランキングを、メンバー1人ずつに個別メッセージで送る。
