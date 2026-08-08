@@ -760,10 +760,9 @@ function setup() {
   Logger.log('初期化完了');
 }
 
-// ===== 週間MVP自動投稿(LINEグループへ) ============================
+// ===== 週間MVP自動投稿(個別チャットへ) ============================
 
-// LINE Webhook: グループにbotが招待された/グループで誰かが発言したときにグループIDを保存する。
-// (自動投稿の宛先として使う。チームのグループ1つを想定し、最後に見たグループIDを保持する)
+// LINE Webhook: 現状グループIDの取得以外には使っていないが、将来グループ投稿に戻す場合に備えて残す。
 function handleLineWebhook_(body) {
   try {
     (body.events || []).forEach(function (ev) {
@@ -785,13 +784,15 @@ function setupWeeklyTrigger() {
   Logger.log('毎週日曜20時台の自動投稿トリガーを設定しました');
 }
 
-// 今週(月曜〜今日)のシュート本数トップ3をグループに投稿する。
-// 確率は含めない(本数だけなら誰でも上位を狙えるため)。今週の記録がなければ投稿しない。
+// 今週(月曜〜今日)のシュート本数ランキングを、メンバー1人ずつに個別メッセージで送る。
+// (グループ投稿ではなく個別チャットに送ることで、各自のトーク履歴の上位に来るようにする)
+// 確率は含めない(本数だけなら誰でも上位を狙える)。今週の記録がなければ何もしない。
+// 注意: LINEの仕様上、botを「友だち追加」していない人には個別メッセージは届かない。
 function weeklyMvpPost() {
   var today = dateOf_(new Date());
   var monday = weekKeyOf_(today);
   var shots = getShots_();
-  var byUser = {};
+  var byUser = {}; // userId -> {name, attempts}
   var teamTotal = 0;
   shots.forEach(function (s) {
     if (s.date < monday || s.date > today) return;
@@ -800,32 +801,40 @@ function weeklyMvpPost() {
     u.attempts += s.attempts;
     teamTotal += s.attempts;
   });
-  var ranked = Object.keys(byUser).map(function (k) { return byUser[k]; })
+  var userIds = Object.keys(byUser);
+  if (!userIds.length) return;
+  var ranked = userIds.map(function (uid) { return { userId: uid, name: byUser[uid].name, attempts: byUser[uid].attempts }; })
     .sort(function (a, b) { return b.attempts - a.attempts; });
-  if (!ranked.length) return;
 
   var medals = ['🥇', '🥈', '🥉'];
-  var lines = ['📣 今週のシュート本数ランキング'];
-  ranked.slice(0, 3).forEach(function (u, i) { lines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
-  lines.push('');
-  lines.push('チーム合計: ' + teamTotal + '本');
-  lines.push('今週もお疲れさまでした！🏀');
-  pushLineMessage_(lines.join('\n'));
+  var rankingLines = ['📣 今週のシュート本数ランキング'];
+  ranked.slice(0, 3).forEach(function (u, i) { rankingLines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
+  rankingLines.push('');
+  rankingLines.push('チーム合計: ' + teamTotal + '本');
+  var rankingText = rankingLines.join('\n');
+
+  var failed = [];
+  ranked.forEach(function (u, i) {
+    var personal = 'あなたは今週 ' + u.attempts + '本(' + (i + 1) + '位/' + ranked.length + '人中)でした。';
+    var text = rankingText + '\n\n' + personal + '\n今週もお疲れさまでした！🏀';
+    if (!pushLineMessageTo_(u.userId, text)) failed.push(u.name);
+  });
+  if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
 }
 
-function pushLineMessage_(text) {
+function pushLineMessageTo_(to, text) {
   var token = getLineToken_();
-  var groupId = PropertiesService.getScriptProperties().getProperty('LINE_GROUP_ID');
-  if (!token || !groupId) {
-    Logger.log('未設定のため投稿しません(トークン: ' + (token ? '設定済' : '未設定') + ', グループID: ' + (groupId ? '取得済' : '未取得') + ')');
-    return false;
-  }
-  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+  if (!token) { Logger.log('LINE_TOKEN未設定のため送信しません'); return false; }
+  var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + token },
-    payload: JSON.stringify({ to: groupId, messages: [{ type: 'text', text: text }] }),
+    payload: JSON.stringify({ to: to, messages: [{ type: 'text', text: text }] }),
     muteHttpExceptions: true
   });
+  if (res.getResponseCode() !== 200) {
+    Logger.log('送信失敗(' + to + '): ' + res.getContentText());
+    return false;
+  }
   return true;
 }
