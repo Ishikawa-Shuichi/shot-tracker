@@ -8,7 +8,10 @@
 <link rel="preconnect" href="https://script.google.com" crossorigin>
 <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
-<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<link rel="preconnect" href="https://static.line-scdn.net">
+<!-- LIFF SDKは同期読み込みだと電波が悪いときに画面表示そのものを塞いでしまうため、deferで後回しにする
+     (起動処理側で読み込み完了を待ち、読み込めない場合は前回のユーザー情報で続行する) -->
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js" defer id="liffSdk"></script>
 <!-- グラフ部品は推移タブでしか使わないため、後回し読み込み(defer)にして起動を速くする -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4" defer></script>
 <style>
@@ -482,38 +485,33 @@ window.addEventListener('online', trySyncPending);
 setInterval(trySyncPending, 20000);
 
 // ---- 起動 ----
+// 方針: 「シュートを記録できる状態」に最速で到達することを最優先する。
+// 前回起動時のデータを端末(localStorage)に控えておき、あれば通信を一切待たずにまず表示する。
+// その裏でLIFFログイン確認と最新データ取得を並行して進め、届き次第そっと置き換える。
 state.pendingShots = loadPendingFromStorage();
 updatePendingBadge();
-(async function(){
+
+var BOOT_CACHE_KEY = 'bootCache_v1';
+function loadBootCache(){
+  try{ return JSON.parse(localStorage.getItem(BOOT_CACHE_KEY) || 'null'); }catch(e){ return null; }
+}
+function saveBootCache(d){
   try{
-    await liff.init({ liffId: LIFF_ID });
-    if(!liff.isLoggedIn()){ liff.login(); return; }
-    var p = await liff.getProfile();
-    state.user = { userId: p.userId, displayName: p.displayName };
-  }catch(e){
-    // LINE外(PCブラウザ)での動作確認用フォールバック
-    console.warn('LIFF init 失敗。テストモードで起動:', e);
-    var dev = localStorage.getItem('devUser');
-    if(!dev){ dev = 'dev-' + Math.random().toString(36).slice(2,8); localStorage.setItem('devUser', dev); }
-    state.user = { userId: dev, displayName: 'テスト:'+dev.slice(-4) };
-  }
+    localStorage.setItem(BOOT_CACHE_KEY, JSON.stringify({
+      user: { userId: state.user.userId, displayName: state.user.displayName }, data: d
+    }));
+  }catch(e){ /* 容量超過等は無視(キャッシュなしでも動く) */ }
+}
+
+function applyUserHeader(){
   var nameOverride = localStorage.getItem('displayNameOverride_' + state.user.userId);
   if(nameOverride) state.user.displayName = nameOverride;
   document.getElementById('who').textContent = state.user.displayName + ' さん';
   document.getElementById('displayNameInput').value = state.user.displayName;
-  try{
-    await boot();
-    trySyncPending(); // 起動できた=通信できているタイミングで、未送信キューがあれば送っておく
-  }catch(e){
-    console.warn('起動時の読み込みに失敗:', e);
-    document.getElementById('loadErrorBg').classList.add('open');
-  }
-})();
-onTap(document.getElementById('loadRetryBtn'), function(){ location.reload(); });
+}
 
-async function boot(){
-  // 起動に必要なデータ(スポット/自分の統計/履歴)を1回のAPI呼び出しでまとめて取得(高速化)
-  var d = await api('init', { userId: state.user.userId });
+// 起動データ(スポット/統計/履歴など)を画面へ反映する。キャッシュからの即時表示と、最新データでの置き換えの両方で使う
+function applyBootData(d){
   state.spots = d.spots;
   state.isHost = !!d.isHost;
   state.members = d.members || [];
@@ -531,7 +529,82 @@ async function boot(){
   renderAddScopeUI();
   renderSpotList();
   fillTrendWhoSelector();
+  // まだサーバーに送れていない記録(未送信キュー)の分を統計に上乗せし、見た目を実態に合わせる
+  state.pendingShots.forEach(function(p){ applyOptimisticShot(p); });
 }
+
+// LIFF SDK(defer読み込み)が使える状態になるまで待つ。電波が悪く読み込めない場合はfalseを返して先へ進む
+function waitForLiffSdk(timeoutMs){
+  return new Promise(function(resolve){
+    if(window.liff) return resolve(true);
+    var s = document.getElementById('liffSdk');
+    if(!s) return resolve(false);
+    var done = false;
+    function fin(){ if(!done){ done = true; resolve(!!window.liff); } }
+    s.addEventListener('load', fin);
+    s.addEventListener('error', fin);
+    setTimeout(fin, timeoutMs || 8000);
+  });
+}
+
+var bootCache = loadBootCache();
+var renderedFromCache = false;
+if(bootCache && bootCache.user && bootCache.data){
+  // 前回のデータで即座に画面を作る。この時点で記録タブは操作可能
+  // (保存はタップ即完了+裏送信の方式なので、通信状態に関わらず安全に記録できる)
+  state.user = { userId: bootCache.user.userId, displayName: bootCache.user.displayName };
+  applyUserHeader();
+  applyBootData(bootCache.data);
+  renderedFromCache = true;
+}
+
+(async function(){
+  // キャッシュ表示できた場合は、LIFF初期化の完了を待たずに最新データ取得も並行して始める(直列待ちの解消)
+  var earlyFetch = renderedFromCache
+    ? api('init', { userId: state.user.userId }).catch(function(e){ return { __error: e }; })
+    : null;
+  var cachedUserId = renderedFromCache ? state.user.userId : null;
+
+  try{
+    var sdkReady = await waitForLiffSdk(8000);
+    if(!sdkReady) throw new Error('LIFF SDKを読み込めませんでした(オフライン?)');
+    await liff.init({ liffId: LIFF_ID });
+    if(!liff.isLoggedIn()){ liff.login(); return; }
+    var p = await liff.getProfile();
+    state.user = { userId: p.userId, displayName: p.displayName };
+  }catch(e){
+    console.warn('LIFF init 失敗:', e);
+    if(cachedUserId){
+      // 電波が悪くてLINEのログイン確認ができないだけの可能性が高い。前回のユーザーのまま続行する
+      state.user = { userId: bootCache.user.userId, displayName: bootCache.user.displayName };
+    }else{
+      // LINE外(PCブラウザ)での動作確認用フォールバック
+      var dev = localStorage.getItem('devUser');
+      if(!dev){ dev = 'dev-' + Math.random().toString(36).slice(2,8); localStorage.setItem('devUser', dev); }
+      state.user = { userId: dev, displayName: 'テスト:'+dev.slice(-4) };
+    }
+  }
+  applyUserHeader();
+
+  // まれに前回と違うLINEアカウントでログインしていた場合は、前回ユーザーのデータを見せ続けないよう必ず取り直す
+  var userChanged = !!cachedUserId && cachedUserId !== state.user.userId;
+  try{
+    var d = (earlyFetch && !userChanged) ? await earlyFetch : await api('init', { userId: state.user.userId });
+    if(d && d.__error) throw d.__error;
+    applyBootData(d);
+    saveBootCache(d);
+    trySyncPending(); // 通信できているタイミングで、未送信キューがあれば送っておく
+  }catch(e){
+    console.warn('起動時の読み込みに失敗:', e);
+    if(renderedFromCache && !userChanged){
+      // 前回データのまま動作継続できる。記録は未送信キューに貯まるので問題ない
+      toast('📴 最新データを取得できません(前回のデータを表示中。記録はできます)');
+    }else{
+      document.getElementById('loadErrorBg').classList.add('open');
+    }
+  }
+})();
+onTap(document.getElementById('loadRetryBtn'), function(){ location.reload(); });
 
 // 連続練習日数バッジ(ヘッダー)。1日以上続いていれば表示する。
 function updateStreakBadge(n){
