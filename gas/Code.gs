@@ -494,6 +494,9 @@ function actionGetHistory_(body) {
 // ever(過去に一度でも達成したことがあるか)は、初達成までUIに存在自体を見せない隠し要素判定に使う。
 var LIVE_UNLOCK_ATTEMPTS = 30;
 var LIVE_UNLOCK_RATE = 0.5;
+// この週(月曜)より前の記録は解放判定に使わない。
+// 機能公開前の過去データで達成済み扱いになると「初解放」の演出と隠し要素性が失われるため
+var LIVE_FEATURE_START_WEEK = '2026-08-10';
 
 // 週内の記録(時系列)を1件ずつ進めながら、その時点の直近30本が50%以上になった瞬間があったか
 function liveCheckWeek_(recs) {
@@ -516,6 +519,7 @@ function computeLiveStatus_(shots, userId) {
     if (s.userId !== userId) return;
     if (s.situation) return; // 解放判定はスポットシューティング(指定なし)のみで数える
     var wk = weekKeyOf_(s.date);
+    if (wk < LIVE_FEATURE_START_WEEK) return; // 機能公開前の週は判定対象外
     var spotMap = bySpotWeek[s.spotId] || (bySpotWeek[s.spotId] = {});
     (spotMap[wk] || (spotMap[wk] = [])).push(s);
   });

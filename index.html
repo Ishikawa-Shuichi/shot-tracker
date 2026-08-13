@@ -123,6 +123,12 @@
         <svg class="court" viewBox="0 0 100 100" id="courtSvg"></svg>
         <!-- スポットは JS で配置 -->
       </div>
+      <!-- ライブシューティングのシチュエーション選択(どこかのスポットを解放するまで存在自体を隠す)。
+           選択は押し直すまで維持され、解放中のスポットの記録にだけ適用される -->
+      <div id="liveBar" class="hidden" style="margin-top:10px">
+        <div class="muted" style="font-size:12px">🔥 ライブシューティング(選び直すまで維持・🔓解放中のスポットのみ適用)</div>
+        <div class="quick" id="liveBarChips"></div>
+      </div>
     </div>
     <div class="card">
       <div class="row"><b class="grow" id="historyTitle">最近の記録</b><span class="muted" id="histCount"></span></div>
@@ -725,6 +731,7 @@ function renderCourt(){
     onTap(el, function(){ openRecord(sp); });
     wrap.appendChild(el);
   });
+  renderLiveBar();
 }
 function renderEditCourt(){
   document.getElementById('editCourtSvg').innerHTML = courtSvgMarkup();
@@ -757,47 +764,77 @@ function renderEditCourt(){
 var rec = { makes:5, attempts:10 };
 // シチュエーション(ライブシューティング)。'' = 指定なし(普通のスポットシューティング)。
 // スポットごとに「今週のスポットシューティング直近30本が50%以上」で解放される隠し要素。
-// 一度も達成していないスポットでは存在自体を見せない。週が変わる(月曜)と再ロック。
-// 同じ練習中に何度も選び直さなくて済むよう、選択はアプリを開いている間は維持する
+// 解放するまで進捗や存在のヒントは一切出さない(完全な隠し要素)。週が変わる(月曜)と再ロック。
+// 選択はコート下のボタン(liveBar)で行い、押し直すまで維持される(同じドリルを続けることが多いため)。
 var SITUATIONS = ['HO', 'チェック', 'ミート', 'ドリブル'];
+var editSituation = ''; // 記録の編集中だけ使う一時的な選択(コート下の選択状態を上書きしないように別持ち)
 function liveForSpot(spotId){
   var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
   if(!statsSource) return null;
   var s = statsSource.spots.find(function(x){ return x.spotId === spotId; });
   return (s && s.live) ? s.live : null;
 }
+function anyLiveUnlocked(){
+  var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
+  if(!statsSource) return false;
+  return statsSource.spots.some(function(s){ return s.live && s.live.unlocked; });
+}
+// コート下のシチュエーション選択バー。どこかのスポットが解放されるまで存在自体を隠す
+function renderLiveBar(){
+  var bar = document.getElementById('liveBar');
+  if(!bar) return;
+  if(!anyLiveUnlocked()){
+    bar.classList.add('hidden');
+    state.recSituation = ''; // 解放が消えたら(週替わり・対象者切替)選択もリセット
+    return;
+  }
+  bar.classList.remove('hidden');
+  var q = document.getElementById('liveBarChips'); q.innerHTML='';
+  [''].concat(SITUATIONS).forEach(function(sit){
+    var b = document.createElement('button');
+    b.textContent = sit || '指定なし';
+    if(state.recSituation === sit) b.classList.add('on');
+    onTap(b, function(){ state.recSituation = sit; renderLiveBar(); });
+    q.appendChild(b);
+  });
+}
+// 記録シート内の表示: 新規記録では「いま何として記録されるか」を示すだけ(選択はコート下で行う)。
+// 記録の編集中だけ、その記録のシチュエーションを直せるようチップを出す
 function renderSituationChips(){
   var row = document.getElementById('recSituationRow');
   var label = document.getElementById('recSituationLabel');
   var q = document.getElementById('recSituation'); q.innerHTML='';
   var live = state.current ? liveForSpot(state.current.id) : null;
-  var editingWithSituation = !!(state.editingShotId && state.recSituation);
+  var unlocked = !!(live && live.unlocked);
 
-  // 解放中(または過去のライブ記録の編集中)だけ選択チップを出す
-  if((live && live.unlocked) || editingWithSituation){
-    row.classList.remove('hidden');
-    label.textContent = '🔥 ライブシューティング(シチュエーションを選択)';
-    [''].concat(SITUATIONS).forEach(function(sit){
-      var b = document.createElement('button');
-      b.textContent = sit || '指定なし';
-      if(state.recSituation === sit) b.classList.add('on');
-      onTap(b, function(){ state.recSituation = sit; renderSituationChips(); });
-      q.appendChild(b);
-    });
+  if(state.editingShotId){
+    // 編集中: 元がライブ記録、またはスポット解放中ならチップで変更できる。それ以外は何も見せない
+    if(editSituation || unlocked){
+      row.classList.remove('hidden');
+      label.textContent = '🔥 シチュエーション(この記録の分だけ変更)';
+      [''].concat(SITUATIONS).forEach(function(sit){
+        var b = document.createElement('button');
+        b.textContent = sit || '指定なし';
+        if(editSituation === sit) b.classList.add('on');
+        onTap(b, function(){ editSituation = sit; renderSituationChips(); });
+        q.appendChild(b);
+      });
+    }else{
+      row.classList.add('hidden');
+    }
     return;
   }
 
-  // ロック中でも、過去に一度でも解放したことがあるスポットなら進捗を見せる(初達成までは完全に隠す)
-  state.recSituation = '';
-  if(live && live.ever){
+  // 新規記録: 選択済みシチュエーションがこのスポットに適用されるかどうかだけ表示
+  if(unlocked && state.recSituation){
     row.classList.remove('hidden');
-    var need = Math.max(0, 30 - live.windowAttempts);
-    label.textContent = need > 0
-      ? '🔒 ライブシューティング(今週のスポットシューティングあと'+need+'本で判定。直近'+live.windowAttempts+'本 '+live.windowPct+'%)'
-      : '🔒 ライブシューティング(直近30本 '+live.windowPct+'% / 50%以上で解放)';
-    return;
+    label.textContent = '🔥 「'+state.recSituation+'」として記録します(変更はコート下のボタンで)';
+  }else if(!unlocked && state.recSituation){
+    row.classList.remove('hidden');
+    label.textContent = 'このスポットはライブ未解放のため「指定なし」で記録します';
+  }else{
+    row.classList.add('hidden');
   }
-  row.classList.add('hidden');
 }
 function openRecord(sp){
   state.current = sp;
@@ -818,7 +855,7 @@ function openEditShot(item){
   state.current = { id: item.spotId, name: item.spot };
   state.editingShotId = item.id;
   rec = { makes: item.makes, attempts: item.attempts };
-  state.recSituation = item.situation || '';
+  editSituation = item.situation || '';
   var who = state.recordingAs ? '・'+state.recordingAs.name+'さん' : '';
   var pendingTag = item.pending ? '(未送信' + who + ')' : '(編集' + who + ')';
   document.getElementById('recSpotName').textContent = (item.pending ? '📴 ' : '✏️ ') + item.spot + pendingTag;
@@ -867,6 +904,7 @@ onTap(document.getElementById('recSave'), async function(){
     var p = findPending(state.editingShotId);
     var diffMakes = rec.makes - p.makes, diffAttempts = rec.attempts - p.attempts;
     p.makes = rec.makes; p.attempts = rec.attempts; p.date = dateVal; p.ym = dateVal.slice(0,7);
+    p.situation = editSituation;
     savePendingToStorage();
     closeRecord();
     toast('未送信の記録を更新しました');
@@ -890,7 +928,7 @@ onTap(document.getElementById('recSave'), async function(){
         shotId: state.editingShotId, actingUserId: state.user.userId,
         makes: rec.makes, attempts: rec.attempts,
         date: dateVal,
-        situation: state.recSituation,
+        situation: editSituation,
         viewYm: state.ym
       });
       toast('更新しました ✅');
@@ -912,13 +950,15 @@ onTap(document.getElementById('recSave'), async function(){
   handledSaveTokens[token] = true;
 
   var prevStreak = state.streak;
+  // シチュエーションは解放中のスポットにだけ適用する(未解放スポットは通常のスポットシューティング扱い)
+  var liveNow = liveForSpot(state.current.id);
   var payload = {
     actingUserId: state.user.userId, userId: target.userId, displayName: target.name,
     spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
     date: dateVal,
     ym: dateVal.slice(0,7),
     spotName: state.current.name,
-    situation: state.recSituation,
+    situation: (liveNow && liveNow.unlocked) ? state.recSituation : '',
     viewYm: state.ym,
     clientId: token
   };
@@ -1016,21 +1056,23 @@ function detectLiveUnlocks(prevStats, newStats){
     }
   }
 }
-var unlockSpotId = null;
 function showLiveUnlock(spotStat, firstEver){
-  unlockSpotId = spotStat.spotId;
   document.getElementById('unlockDesc').innerHTML = firstEver
-    ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>このスポットの記録画面にシチュエーション(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は週ごと。月曜にリセットされ、また挑戦できます</span>'
-    : '<b>'+esc(spotStat.name)+'</b>の今週のライブシューティングが解放されました！<br>記録画面でシチュエーションを選べます。';
+    ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>コートの下にシチュエーションボタン(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は週ごと。月曜にリセットされ、また挑戦できます</span>'
+    : '<b>'+esc(spotStat.name)+'</b>の今週のライブシューティングが解放されました！<br>コート下のボタンでシチュエーションを選べます。';
   var em = document.getElementById('unlockEmoji');
   em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
   document.getElementById('unlockBg').classList.add('open');
 }
 onTap(document.getElementById('unlockCloseBtn'), function(){
   document.getElementById('unlockBg').classList.remove('open');
-  var sp = state.spots.find(function(x){ return x.id === unlockSpotId; });
-  unlockSpotId = null;
-  if(sp) openRecord(sp); // そのままライブシューティングを打ちに行けるよう記録シートを開き直す
+  // 出現したコート下のボタンに視線を誘導する(ポップ演出を付けてスクロールで見せる)
+  renderLiveBar();
+  var bar = document.getElementById('liveBar');
+  if(bar && !bar.classList.contains('hidden')){
+    bar.classList.remove('unlock-pop'); void bar.offsetWidth; bar.classList.add('unlock-pop');
+    bar.scrollIntoView({ behavior:'smooth', block:'center' });
+  }
 });
 function renderMyStatsView(stats){
   var t = stats.total;
