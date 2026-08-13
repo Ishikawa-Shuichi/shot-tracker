@@ -208,36 +208,40 @@ function actionRecordShot_(body) {
 
   // 通信リトライで同じ保存が二重実行されても記録が重複しないよう、
   // クライアントが発行したID(clientId)を記録IDに使い、既に存在すれば追記せず成功として返す(冪等化)。
+  // さらに保存ボタン連打などで同じclientIdの保存が「同時に」届いた場合も両方追記されないよう、
+  // 重複チェック〜追記の間を排他ロックで直列化する。
   var clientId = String(body.clientId || '').trim();
   var id = clientId || Utilities.getUuid();
-  if (clientId) {
-    var existing = getShots_();
-    for (var ei = 0; ei < existing.length; ei++) {
-      if (existing[ei].id === clientId) {
-        var spotsDup = getSpots_(actingUserId);
-        var viewYmDup = String(body.viewYm || '') || null;
-        return {
-          id: clientId, ym: existing[ei].ym, duplicate: true,
-          myStats: computeMyStats_(spotsDup, existing, actingUserId, 'month', viewYmDup),
-          history: computeHistory_(spotsDup, existing, actingUserId, 20),
-          streak: computeStreak_(existing, actingUserId)
-        };
+  var viewYm = String(body.viewYm || '') || null;
+
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(15000); }
+  catch (le) { throw new Error('サーバーが混み合っています。少し待ってからもう一度お試しください'); }
+  var dupRow = null, shots = null;
+  try {
+    if (clientId) {
+      var existing = getShots_();
+      for (var ei = 0; ei < existing.length; ei++) {
+        if (existing[ei].id === clientId) { dupRow = existing[ei]; break; }
       }
+      if (dupRow) shots = existing;
     }
+    if (!dupRow) {
+      var sh = getSheet_(SHEET_SHOTS);
+      sh.appendRow([
+        id, new Date().toISOString(), ym, dateOf_(d),
+        userId, displayName, spotId, makes, attempts
+      ]);
+      invalidateShotsCache_();
+    }
+  } finally {
+    lock.releaseLock();
   }
 
-  var sh = getSheet_(SHEET_SHOTS);
-  sh.appendRow([
-    id, new Date().toISOString(), ym, dateOf_(d),
-    userId, displayName, spotId, makes, attempts
-  ]);
-  invalidateShotsCache_();
-
   var spots = getSpots_(actingUserId);
-  var shots = getShots_();
-  var viewYm = String(body.viewYm || '') || null;
+  if (!shots) shots = getShots_();
   return {
-    id: id, ym: ym,
+    id: id, ym: dupRow ? dupRow.ym : ym, duplicate: dupRow ? true : undefined,
     myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
     history: computeHistory_(spots, shots, actingUserId, 20),
     streak: computeStreak_(shots, actingUserId)

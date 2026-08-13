@@ -437,15 +437,18 @@ function updatePendingBadge(){
   if(n > 0){ el.textContent = '📴未送信'+n+'件'; el.classList.remove('hidden'); }
   else{ el.classList.add('hidden'); }
 }
-// 保存直後、本人の記録ならその場でコート/マイタブ/履歴に反映する(未送信でも見た目には即反映)
+// 保存直後、その場でコート/マイタブ/履歴に反映する(未送信でも見た目には即反映)。
+// 本人の記録はマイ統計へ、ホストの代理記録は代理表示用の統計へ反映する。
 function applyOptimisticShot(payload){
-  if(payload.userId !== state.user.userId) return; // 代理記録はキューに積むだけ(対象者の画面はここでは持っていないため)
-  if(state.myStats && (!state.ym || payload.ym === state.ym)){
-    var spot = state.myStats.spots.find(function(s){ return s.spotId === payload.spotId; });
+  var stats = null;
+  if(payload.userId === state.user.userId) stats = state.myStats;
+  else if(state.recordingAs && payload.userId === state.recordingAs.userId) stats = state.proxyStats;
+  if(stats && (!state.ym || payload.ym === state.ym)){
+    var spot = stats.spots.find(function(s){ return s.spotId === payload.spotId; });
     if(spot){ spot.makes += payload.makes; spot.attempts += payload.attempts; spot.pct = spot.attempts>0 ? Math.round(spot.makes/spot.attempts*1000)/10 : 0; }
-    var t = state.myStats.total;
+    var t = stats.total;
     t.makes += payload.makes; t.attempts += payload.attempts; t.pct = t.attempts>0 ? Math.round(t.makes/t.attempts*1000)/10 : 0;
-    renderMyStatsView(state.myStats);
+    if(stats === state.myStats) renderMyStatsView(stats);
   }
   renderCourt();
   renderHistoryList();
@@ -696,10 +699,13 @@ document.querySelectorAll('.stepper button').forEach(function(b){
 });
 onTap(document.getElementById('recClose'), closeRecord);
 document.getElementById('recSheetBg').addEventListener('click', function(e){ if(e.target.id==='recSheetBg') closeRecord(); });
+// 保存済みトークンの控え。LINEのWebViewではdisabled中のボタンでもタップイベントが発火するため、
+// 連打されても同じ保存IDは一度しか処理しないことをここで保証する(二重登録の防止)。
+var handledSaveTokens = {};
 onTap(document.getElementById('recSave'), async function(){
   var btn = document.getElementById('recSave');
   var target = state.recordingAs || { userId: state.user.userId, name: state.user.displayName };
-  var dateVal = document.getElementById('recDate').value;
+  var dateVal = document.getElementById('recDate').value || localDateStr();
 
   // 未送信(まだサーバーに届いていない)記録の編集は、通信不要でその場で直す
   if(state.editingShotId && isPendingId(state.editingShotId)){
@@ -720,52 +726,75 @@ onTap(document.getElementById('recSave'), async function(){
     return;
   }
 
-  try{
-    btn.disabled=true;
-    var res;
-    if(state.editingShotId){
-      res = await api('updateShot', {
+  // ---- 既存記録の編集(サーバー確定済みの記録): 通信を待ってから閉じる ----
+  if(state.editingShotId){
+    if(btn.dataset.busy) return; // disabledはタップイベントを止めないため、フラグで再入を防ぐ
+    try{
+      btn.dataset.busy='1'; btn.disabled=true; btn.textContent='保存中…';
+      var res = await api('updateShot', {
         shotId: state.editingShotId, actingUserId: state.user.userId,
         makes: rec.makes, attempts: rec.attempts,
         date: dateVal,
         viewYm: state.ym
       });
       toast('更新しました ✅');
-    }else{
-      var prevStreak = state.streak;
-      var payload = {
-        actingUserId: state.user.userId, userId: target.userId, displayName: target.name,
-        spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
-        date: dateVal,
-        viewYm: state.ym,
-        clientId: state.saveToken
-      };
-      try{
-        res = await api('recordShot', payload);
-      }catch(e){
-        if(!e.isNetworkError) throw e; // 入力エラー等はそのまま上のcatchで表示
-        // オフライン: 端末に貯めて後で自動送信する
-        payload.ym = dateVal.slice(0,7);
-        payload.spotName = state.current.name;
-        addPending(payload);
-        closeRecord();
-        toast('📴 オフラインで保存しました(電波が戻ったら自動送信します)');
-        applyOptimisticShot(payload);
-        return;
+      closeRecord();
+      applyMyStats(res.myStats);
+      if(res.streak != null) updateStreakBadge(res.streak);
+      if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
+      else{ applyHistory(res.history); }
+      renderCourt();
+    }catch(e){ toast('エラー: '+e.message); }
+    finally{ delete btn.dataset.busy; btn.disabled=false; btn.textContent='保存する'; }
+    return;
+  }
+
+  // ---- 新規記録: タップした瞬間に画面を閉じて反映し、送信は裏で行う ----
+  // (通信を待たせると「押せていない」と誤解して連打→二重登録につながるため)
+  var token = state.saveToken;
+  if(handledSaveTokens[token]) return; // 連打・閉じるアニメーション中の再タップを無視
+  handledSaveTokens[token] = true;
+
+  var prevStreak = state.streak;
+  var payload = {
+    actingUserId: state.user.userId, userId: target.userId, displayName: target.name,
+    spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
+    date: dateVal,
+    ym: dateVal.slice(0,7),
+    spotName: state.current.name,
+    viewYm: state.ym,
+    clientId: token
+  };
+  closeRecord();
+  applyOptimisticShot(payload);
+  toast('保存しました ✅');
+
+  // ここから先は画面を待たせない(失敗しても記録は未送信キューに残って自動再送される)
+  (async function(){
+    try{
+      var res = await api('recordShot', payload);
+      // サーバー確定値で置き換える(見た目は概算値と同じになるはず)
+      applyMyStats(res.myStats);
+      if(res.streak != null){
+        updateStreakBadge(res.streak);
+        // ストリークが伸びた瞬間(=その日最初の記録)は少しお祝いする
+        if(res.streak > prevStreak) toast('🔥'+res.streak+'日連続！');
       }
-      // ストリークが伸びた瞬間(=その日最初の記録)は少しお祝いする
-      toast(res.streak != null && res.streak > prevStreak
-        ? '保存しました ✅ 🔥'+res.streak+'日連続！'
-        : '保存しました ✅');
+      if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
+      else{ applyHistory(res.history); }
+      renderCourt();
+    }catch(e){
+      if(e.isNetworkError){
+        // オフライン: 端末に貯めて後で自動送信する(画面には反映済み)
+        addPending(payload);
+        toast('📴 電波が弱いため未送信で保存しました(自動で再送信します)');
+      }else{
+        // サーバーに明確に拒否された(入力エラー等)。反映してしまった概算値を正しい値に戻す
+        toast('保存できませんでした: '+e.message);
+        refreshAll();
+      }
     }
-    closeRecord();
-    applyMyStats(res.myStats);
-    if(res.streak != null) updateStreakBadge(res.streak);
-    if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
-    else{ applyHistory(res.history); }
-    renderCourt();
-  }catch(e){ toast('エラー: '+e.message); }
-  finally{ btn.disabled=false; }
+  })();
 });
 onTap(document.getElementById('recDeleteBtn'), async function(){
   if(!confirm('この記録を削除しますか？')) return;
@@ -860,9 +889,10 @@ function applyHistory(items){
   renderHistoryList();
 }
 function renderHistoryList(){
-  // 未送信の記録は「自分の履歴」表示中のみ上に重ねて見せる(代理記録の対象者の履歴を見ている間は出さない)
-  var pendingView = state.recordingAs ? [] : state.pendingShots
-    .filter(function(p){ return p.userId === state.user.userId; })
+  // 未送信の記録は、いま表示している人(自分、または代理記録の対象者)の分だけ上に重ねて見せる
+  var viewUserId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
+  var pendingView = state.pendingShots
+    .filter(function(p){ return p.userId === viewUserId; })
     .slice().reverse()
     .map(function(p){
       return { id:p.clientId, date:p.date, ym:p.ym, spotId:p.spotId, spot:p.spotName,
@@ -1284,6 +1314,8 @@ document.querySelectorAll('nav button').forEach(function(b){
 function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
 function genId(){ return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10); }
+// 端末のタイムゾーンでの今日の日付(YYYY-MM-DD)。toISOString()はUTCになり日本の夜は日付がずれるため使わない
+function localDateStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
 var toastTimer;
 function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show');},1800); }
