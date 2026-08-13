@@ -158,6 +158,11 @@
 
   <!-- ===== チームタブ ===== -->
   <section id="tab-team" class="hidden">
+    <!-- 連続シューティング日数(全員に公開・続いている人だけ表示) -->
+    <div class="card hidden" id="streakCard">
+      <b>🔥 連続シューティング中</b>
+      <div id="streakList" style="margin-top:6px"></div>
+    </div>
     <!-- 非ホスト: 自分の順位だけ -->
     <div id="teamMeOnly" class="hidden">
       <div class="card">
@@ -212,11 +217,25 @@
 
   <!-- ===== 推移タブ ===== -->
   <section id="tab-trend" class="hidden">
+    <!-- ライブ解放を経験していない人にはこの切替自体を見せない(隠し要素のネタバレ防止) -->
+    <div class="row hidden" style="gap:8px; margin-top:12px" id="trendPageRow">
+      <button class="pagebtn active" id="trendPageSpotBtn">スポット</button>
+      <button class="pagebtn" id="trendPageLiveBtn">🔥ライブ</button>
+    </div>
     <div class="card">
       <div class="row" style="gap:8px">
         <select id="trendSpotSel" class="grow"></select>
         <select id="trendWho" style="width:130px">
           <option value="me">自分</option>
+        </select>
+      </div>
+      <div class="row hidden" style="gap:8px; margin-top:8px" id="trendSituationRow">
+        <select id="trendSituationSel" class="grow">
+          <option value="__live__">ライブ全体(全シチュエーション)</option>
+          <option value="HO">HO</option>
+          <option value="チェック">チェック</option>
+          <option value="ミート">ミート</option>
+          <option value="ドリブル">ドリブル</option>
         </select>
       </div>
       <div class="row" style="gap:8px; margin-top:8px">
@@ -226,6 +245,15 @@
       </div>
       <canvas id="trendChart" height="220" style="margin-top:12px"></canvas>
       <div id="trendTable" style="margin-top:8px"></div>
+    </div>
+  </section>
+
+  <!-- ===== 実績タブ(最初のトロフィーを獲得するまでタブ自体を隠す) ===== -->
+  <section id="tab-trophy" class="hidden">
+    <div class="card">
+      <div class="row"><b class="grow">🏆 トロフィー</b><span class="pill" id="trophyCount"></span></div>
+      <div class="muted" style="margin:6px 0">獲得すると増えていきます。まだ見ぬトロフィーの条件はひみつ</div>
+      <div id="trophyList" style="margin-top:8px"></div>
     </div>
   </section>
 
@@ -279,6 +307,7 @@
   <button data-tab="my"><span class="ic">📊</span>マイ</button>
   <button data-tab="team"><span class="ic">👥</span>チーム</button>
   <button data-tab="trend"><span class="ic">📈</span>推移</button>
+  <button data-tab="trophy" id="navTrophyBtn" class="hidden"><span class="ic">🏆</span>実績</button>
   <button data-tab="settings"><span class="ic">⚙️</span>設定</button>
 </nav>
 
@@ -323,6 +352,17 @@
   </div>
 </div>
 
+<!-- トロフィー解放の演出(記録直後に全画面で目立たせ、タップするまで閉じない) -->
+<div class="sheet-bg" id="trophyBg" style="align-items:center; justify-content:center; z-index:61;">
+  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:#f5c518">
+    <div id="trophyEmoji" style="font-size:60px">🏆</div>
+    <b style="display:block; margin-top:10px; font-size:19px">トロフィー解放！</b>
+    <div id="trophyDesc" style="margin-top:10px; line-height:1.9; font-size:14px"></div>
+    <div class="muted" style="margin-top:8px; font-size:12px">実績タブに追加されました</div>
+    <button class="btn" id="trophyCloseBtn" style="margin-top:20px">やったね 🎉</button>
+  </div>
+</div>
+
 <!-- ライブシューティング解放の演出(記録直後に全画面で目立たせ、タップするまで閉じない) -->
 <div class="sheet-bg" id="unlockBg" style="align-items:center; justify-content:center; z-index:60;">
   <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:var(--accent)">
@@ -364,6 +404,9 @@ var state = {
   saveToken: null,           // 新規記録の保存ID。リトライや保存ボタン連打でも同じIDになり二重登録を防ぐ
   streak: 0,                 // 連続練習日数(ヘッダーのバッジに表示)
   pendingShots: [],          // オフライン等でまだサーバーに送れていない新規記録のキュー
+  pendingOps: [],            // オフライン時の送信済み記録への編集/削除操作のキュー
+  myTrophies: [],            // 獲得済みトロフィー(最初の1個を取るまで実績タブ自体を隠す)
+  trophyTotal: 0,            // トロフィーの総数(未獲得分を「？？？」で見せる用)
   historyItems: [],          // 直近取得した(未送信分を含まない)履歴。未送信分と合成して表示するために保持
   syncing: false              // 未送信キューを送信中かどうか(二重実行防止)
 };
@@ -474,9 +517,32 @@ function removePending(clientId){
 }
 function updatePendingBadge(){
   var el = document.getElementById('pendingBadge');
-  var n = state.pendingShots.length;
+  var n = state.pendingShots.length + state.pendingOps.length;
   if(n > 0){ el.textContent = '📴未送信'+n+'件'; el.classList.remove('hidden'); }
   else{ el.classList.add('hidden'); }
+}
+
+// ---- オフライン編集/削除キュー ----
+// 送信済み記録への編集・削除が通信エラーで失敗したとき、操作内容を端末に貯めておき後で自動再送する。
+// updateShot(値の上書き)もdeleteShot(削除済みは成功扱い)もサーバー側が何度実行しても安全な作りなので再送できる。
+var PENDING_OPS_KEY = 'pendingOps_v1';
+function loadPendingOpsFromStorage(){
+  try{ return JSON.parse(localStorage.getItem(PENDING_OPS_KEY) || '[]'); }catch(e){ return []; }
+}
+function savePendingOpsToStorage(){
+  try{ localStorage.setItem(PENDING_OPS_KEY, JSON.stringify(state.pendingOps)); }catch(e){ /* 容量超過等は無視 */ }
+}
+function addPendingOp(action, payload){
+  // 同じ記録への古い操作は新しい操作で置き換える(編集を重ねても最後の状態だけ送れば同じ結果になるため)
+  state.pendingOps = state.pendingOps.filter(function(op){ return op.payload.shotId !== payload.shotId; });
+  state.pendingOps.push({ opId: genId(), action: action, payload: payload });
+  savePendingOpsToStorage();
+  updatePendingBadge();
+}
+function removePendingOp(opId){
+  state.pendingOps = state.pendingOps.filter(function(op){ return op.opId !== opId; });
+  savePendingOpsToStorage();
+  updatePendingBadge();
 }
 // 保存直後、その場でコート/マイタブ/履歴に反映する(未送信でも見た目には即反映)。
 // 本人の記録はマイ統計へ、ホストの代理記録は代理表示用の統計へ反映する。
@@ -484,7 +550,9 @@ function applyOptimisticShot(payload){
   var stats = null;
   if(payload.userId === state.user.userId) stats = state.myStats;
   else if(state.recordingAs && payload.userId === state.recordingAs.userId) stats = state.proxyStats;
-  if(stats && (!state.ym || payload.ym === state.ym)){
+  // 確率(スポット別・合計)はスポットシューティングのみで計算するため、ライブ記録は加算しない
+  // (履歴・本数系にはサーバー側で反映される)
+  if(stats && !payload.situation && (!state.ym || payload.ym === state.ym)){
     var spot = stats.spots.find(function(s){ return s.spotId === payload.spotId; });
     if(spot){ spot.makes += payload.makes; spot.attempts += payload.attempts; spot.pct = spot.attempts>0 ? Math.round(spot.makes/spot.attempts*1000)/10 : 0; }
     var t = stats.total;
@@ -495,11 +563,12 @@ function applyOptimisticShot(payload){
   renderHistoryList();
 }
 async function trySyncPending(){
-  if(state.syncing || !state.pendingShots.length) return;
+  if(state.syncing || (!state.pendingShots.length && !state.pendingOps.length)) return;
   state.syncing = true;
   try{
     var queue = state.pendingShots.slice();
     var syncedAny = false;
+    var offline = false;
     for(var i=0; i<queue.length; i++){
       var item = queue[i];
       try{
@@ -507,8 +576,23 @@ async function trySyncPending(){
         removePending(item.clientId);
         syncedAny = true;
       }catch(e){
-        if(e.isNetworkError){ break; } // まだオフライン。残りは次回のtrySyncPendingに任せる
+        if(e.isNetworkError){ offline = true; break; } // まだオフライン。残りは次回のtrySyncPendingに任せる
         removePending(item.clientId); // サーバーが拒否した項目は積み直しても直らないため諦める
+      }
+    }
+    // 新規記録を送り終えてから、編集/削除の操作を古い順に送る
+    if(!offline){
+      var ops = state.pendingOps.slice();
+      for(var k=0; k<ops.length; k++){
+        var op = ops[k];
+        try{
+          await api(op.action, op.payload, { retries:0, timeoutMs:10000 });
+          removePendingOp(op.opId);
+          syncedAny = true;
+        }catch(e2){
+          if(e2.isNetworkError){ break; }
+          removePendingOp(op.opId);
+        }
       }
     }
     if(syncedAny){
@@ -527,6 +611,7 @@ setInterval(trySyncPending, 20000);
 // 前回起動時のデータを端末(localStorage)に控えておき、あれば通信を一切待たずにまず表示する。
 // その裏でLIFFログイン確認と最新データ取得を並行して進め、届き次第そっと置き換える。
 state.pendingShots = loadPendingFromStorage();
+state.pendingOps = loadPendingOpsFromStorage();
 updatePendingBadge();
 
 var BOOT_CACHE_KEY = 'bootCache_v1';
@@ -563,6 +648,9 @@ function applyBootData(d, fromCache){
   applyMyStats(d.myStats);
   applyHistory(d.history);
   updateStreakBadge(d.streak || 0);
+  state.myTrophies = d.myTrophies || [];
+  state.trophyTotal = d.trophyTotal || 0;
+  renderTrophyNav();
   renderCourt();
   renderEditCourt();
   fillSpotSelectors();
@@ -904,6 +992,7 @@ document.getElementById('recSheetBg').addEventListener('click', function(e){ if(
 // 連打されても同じ保存IDは一度しか処理しないことをここで保証する(二重登録の防止)。
 var handledSaveTokens = {};
 onTap(document.getElementById('recSave'), async function(){
+  ensureAudio(); // タップの瞬間に音声を有効化しておく(このあと解放演出が出たときに音を鳴らすため)
   var btn = document.getElementById('recSave');
   var target = state.recordingAs || { userId: state.user.userId, name: state.user.displayName };
   var dateVal = document.getElementById('recDate').value || todayStr();
@@ -911,7 +1000,11 @@ onTap(document.getElementById('recSave'), async function(){
   // 未送信(まだサーバーに届いていない)記録の編集は、通信不要でその場で直す
   if(state.editingShotId && isPendingId(state.editingShotId)){
     var p = findPending(state.editingShotId);
-    var diffMakes = rec.makes - p.makes, diffAttempts = rec.attempts - p.attempts;
+    // 確率にはスポットシューティング(指定なし)だけを数えるため、編集前後それぞれ
+    // 「数えられていたか」を見て差分を出す(例: 指定なし→HOに変えたら確率からは丸ごと引く)
+    var oldCounted = !p.situation, newCounted = !editSituation;
+    var diffMakes = (newCounted ? rec.makes : 0) - (oldCounted ? p.makes : 0);
+    var diffAttempts = (newCounted ? rec.attempts : 0) - (oldCounted ? p.attempts : 0);
     p.makes = rec.makes; p.attempts = rec.attempts; p.date = dateVal; p.ym = dateVal.slice(0,7);
     p.situation = editSituation;
     savePendingToStorage();
@@ -931,15 +1024,16 @@ onTap(document.getElementById('recSave'), async function(){
   // ---- 既存記録の編集(サーバー確定済みの記録): 通信を待ってから閉じる ----
   if(state.editingShotId){
     if(btn.dataset.busy) return; // disabledはタップイベントを止めないため、フラグで再入を防ぐ
+    var updatePayload = {
+      shotId: state.editingShotId, actingUserId: state.user.userId,
+      makes: rec.makes, attempts: rec.attempts,
+      date: dateVal,
+      situation: editSituation,
+      viewYm: state.ym
+    };
     try{
       btn.dataset.busy='1'; btn.disabled=true; btn.textContent='保存中…';
-      var res = await api('updateShot', {
-        shotId: state.editingShotId, actingUserId: state.user.userId,
-        makes: rec.makes, attempts: rec.attempts,
-        date: dateVal,
-        situation: editSituation,
-        viewYm: state.ym
-      });
+      var res = await api('updateShot', updatePayload);
       toast('更新しました ✅');
       closeRecord();
       applyMyStats(res.myStats);
@@ -947,7 +1041,20 @@ onTap(document.getElementById('recSave'), async function(){
       if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
       else{ applyHistory(res.history); }
       renderCourt();
-    }catch(e){ toast('エラー: '+e.message); }
+    }catch(e){
+      if(e.isNetworkError){
+        // オフライン: 操作をキューに貯めて後で自動送信する。表示中の履歴にはその場で反映する
+        addPendingOp('updateShot', updatePayload);
+        var hi = state.historyItems.find(function(h){ return h.id === updatePayload.shotId; });
+        if(hi){ hi.makes = rec.makes; hi.attempts = rec.attempts; hi.date = dateVal; hi.ym = dateVal.slice(0,7);
+          hi.situation = editSituation; hi.pct = rec.attempts>0 ? Math.round(rec.makes/rec.attempts*1000)/10 : 0; hi.pendingEdit = true; }
+        closeRecord();
+        renderHistoryList();
+        toast('📴 電波が弱いため編集を保存待ちにしました(自動で送信します)');
+      }else{
+        toast('エラー: '+e.message);
+      }
+    }
     finally{ delete btn.dataset.busy; btn.disabled=false; btn.textContent='保存する'; }
     return;
   }
@@ -989,6 +1096,16 @@ onTap(document.getElementById('recSave'), async function(){
       if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
       else{ applyHistory(res.history); }
       renderCourt();
+      // トロフィーの新規獲得(記録の持ち主が対象。代理記録なら相手の獲得としてホスト画面でも祝う)
+      if(res.newTrophies && res.newTrophies.length){
+        if(res.trophyOwner === state.user.userId){
+          state.myTrophies = (state.myTrophies||[]).concat(res.newTrophies);
+          renderTrophyNav();
+          showTrophyUnlock(res.newTrophies, null);
+        }else{
+          showTrophyUnlock(res.newTrophies, (state.recordingAs && state.recordingAs.name) || '');
+        }
+      }
     }catch(e){
       if(e.isNetworkError){
         // オフライン: 端末に貯めて後で自動送信する(画面には反映済み)
@@ -1012,7 +1129,8 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
     removePending(state.editingShotId);
     closeRecord();
     toast('未送信の記録を取り消しました');
-    if(delP.userId===state.user.userId && state.myStats && (!state.ym || delP.ym===state.ym)){
+    // ライブ記録は確率に足していないため、取り消し時も引かない
+    if(!delP.situation && delP.userId===state.user.userId && state.myStats && (!state.ym || delP.ym===state.ym)){
       var delSpot = state.myStats.spots.find(function(s){ return s.spotId===delP.spotId; });
       if(delSpot){ delSpot.makes-=delP.makes; delSpot.attempts-=delP.attempts; delSpot.pct = delSpot.attempts>0?Math.round(delSpot.makes/delSpot.attempts*1000)/10:0; }
       var dt = state.myStats.total;
@@ -1025,11 +1143,20 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
 
   try{
     btn.disabled=true;
+    var delPayload = { shotId: state.editingShotId, actingUserId: state.user.userId, viewYm: state.ym };
     var res;
     try{
-      res = await api('deleteShot', { shotId: state.editingShotId, actingUserId: state.user.userId, viewYm: state.ym });
+      res = await api('deleteShot', delPayload);
     }catch(e){
-      if(e.isNetworkError){ toast('オフラインのため削除できません。電波の良い場所でお試しください'); return; }
+      if(e.isNetworkError){
+        // オフライン: 削除操作をキューに貯めて後で自動送信する。表示中の履歴からはその場で消す
+        addPendingOp('deleteShot', delPayload);
+        state.historyItems = state.historyItems.filter(function(h){ return h.id !== delPayload.shotId; });
+        closeRecord();
+        renderHistoryList();
+        toast('📴 電波が弱いため削除を保存待ちにしました(自動で送信します)');
+        return;
+      }
       throw e;
     }
     closeRecord();
@@ -1066,7 +1193,78 @@ function detectLiveUnlocks(prevStats, newStats){
     }
   }
 }
+// ---- 解放効果音(Web Audio APIで合成。外部ファイル不要・オフラインでも鳴る) ----
+// スマホのブラウザは「ユーザーが画面を触った瞬間」しか音声を有効化できないため、
+// 保存ボタンのタップ時に初期化しておき、数秒後の解放演出で鳴らせるようにしておく
+var audioCtx = null;
+function ensureAudio(){
+  try{
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return;
+    if(!audioCtx) audioCtx = new AC();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+  }catch(e){ /* 音が鳴らなくても機能には影響させない */ }
+}
+function playUnlockSound(){
+  try{
+    if(!audioCtx || audioCtx.state !== 'running') return;
+    var t0 = audioCtx.currentTime;
+    // 上昇するメジャーアルペジオ(ド→ミ→ソ)+最後に高いドのキラッとした余韻。音量は控えめ
+    [[1046.5, 0, .30, .10], [1318.5, .09, .30, .10], [1568.0, .18, .35, .10], [2093.0, .27, .60, .06]]
+      .forEach(function(n){
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = n[0];
+        var start = t0 + n[1];
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(n[3], start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + n[2]);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(start); osc.stop(start + n[2] + 0.05);
+      });
+  }catch(e){ /* 鳴らなくても無視 */ }
+}
+// ---- トロフィー(実績) ----
+var TIER_EMOJI = { bronze: '🥉', silver: '🥈', gold: '🥇' };
+// 最初のトロフィーを獲得するまで実績タブの存在自体を隠す(隠し要素)
+function renderTrophyNav(){
+  var btn = document.getElementById('navTrophyBtn');
+  if(btn) btn.classList.toggle('hidden', !(state.myTrophies && state.myTrophies.length));
+}
+function renderTrophyTab(){
+  var host = document.getElementById('trophyList'); host.innerHTML='';
+  var mine = state.myTrophies || [];
+  mine.forEach(function(t){
+    var el=document.createElement('div'); el.className='listitem';
+    el.innerHTML='<span>'+(TIER_EMOJI[t.tier]||'🏆')+' '+esc(t.name)+'</span>'
+      +'<span class="muted" style="font-size:12px">'+String(t.earnedAt||'').slice(0,10)+'</span>';
+    host.appendChild(el);
+  });
+  // 未獲得分は内容を伏せて「？？？」で見せる(全部でいくつあるかだけ分かる)
+  var rest = Math.max(0, (state.trophyTotal||0) - mine.length);
+  for(var i=0;i<rest;i++){
+    var q=document.createElement('div'); q.className='listitem';
+    q.innerHTML='<span class="muted">❓ ？？？</span>';
+    host.appendChild(q);
+  }
+  document.getElementById('trophyCount').textContent = mine.length + ' / ' + (state.trophyTotal||0);
+}
+function showTrophyUnlock(trophies, ownerName){
+  playUnlockSound();
+  var lines = trophies.map(function(t){ return (TIER_EMOJI[t.tier]||'🏆')+' <b>'+esc(t.name)+'</b>'; }).join('<br>');
+  document.getElementById('trophyDesc').innerHTML = (ownerName ? esc(ownerName)+'さんが解放！<br>' : '') + lines;
+  var em = document.getElementById('trophyEmoji');
+  em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
+  document.getElementById('trophyBg').classList.add('open');
+}
+onTap(document.getElementById('trophyCloseBtn'), function(){
+  document.getElementById('trophyBg').classList.remove('open');
+  renderTrophyNav();
+});
+
 function showLiveUnlock(spotStat, firstEver){
+  playUnlockSound();
   document.getElementById('unlockDesc').innerHTML = firstEver
     ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>コートの下にシチュエーションボタン(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は週ごと。月曜にリセットされ、また挑戦できます</span>'
     : '<b>'+esc(spotStat.name)+'</b>の今週のライブシューティングが解放されました！<br>コート下のボタンでシチュエーションを選べます。';
@@ -1162,7 +1360,7 @@ function renderHistoryList(){
   document.getElementById('histCount').textContent = merged.length? '':'まだありません';
   merged.forEach(function(it){
     var el=document.createElement('div'); el.className='listitem'; el.style.cursor='pointer';
-    var tag = it.pending ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>' : '';
+    var tag = (it.pending || it.pendingEdit) ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>' : '';
     var sitTag = it.situation ? ' <span class="pill" style="color:var(--accent2); border-color:var(--accent2)">'+esc(it.situation)+'</span>' : '';
     el.innerHTML='<span>'+esc(it.spot)+sitTag+' <span class="muted" style="font-size:12px">'+it.date+'</span>'+tag+'</span>'
       +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span> <span class="muted">›</span></span>';
@@ -1194,11 +1392,26 @@ document.getElementById('teamSpotSel').addEventListener('change', renderTeamView
 document.getElementById('teamUserSel').addEventListener('change', renderTeamView);
 document.getElementById('teamSpotSelMe').addEventListener('change', loadTeam);
 
+// 連続シューティング日数(BeReal的に全員へ公開)。続いている人だけを載せる
+function renderStreakCard(streaks){
+  var card = document.getElementById('streakCard');
+  var list = document.getElementById('streakList');
+  if(!card || !list) return;
+  var rows = streaks || [];
+  card.classList.toggle('hidden', !rows.length);
+  list.innerHTML = '';
+  rows.forEach(function(s){
+    var el=document.createElement('div'); el.className='listitem';
+    el.innerHTML='<span>'+esc(s.name)+'</span><span>🔥 <b>'+s.streak+'</b>日連続</span>';
+    list.appendChild(el);
+  });
+}
 async function loadTeam(){
   document.getElementById('teamMeOnly').classList.toggle('hidden', state.isHost);
   document.getElementById('teamHostView').classList.toggle('hidden', !state.isHost);
   if(state.isHost){
     state.teamData = await api('getTeamStats', { ym: state.ym, userId: state.user.userId });
+    renderStreakCard(state.teamData.streaks);
     fillUserSelector(state.teamData.users);
     renderTeamView();
     renderTeamCount();
@@ -1208,6 +1421,7 @@ async function loadTeam(){
   }else{
     var spotId = document.getElementById('teamSpotSelMe').value;
     var d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
+    renderStreakCard(d.streaks);
     // シュート本数ランキングだけは全員分を公開
     var countRows = d.countRanking.map(function(u){ return { name:u.name, attempts:u.attempts }; });
     renderRankTable('myCountRankBody', countRows, function(r){ return r.attempts; }, '本数');
@@ -1323,6 +1537,25 @@ function renderTeamUser(userId){
 // ================= 推移 =================
 document.getElementById('trendSpotSel').addEventListener('change', loadTrend);
 document.getElementById('trendWho').addEventListener('change', loadTrend);
+// 推移タブのページ切替(スポット/ライブ)。ライブ解放を経験した人にだけ切替ボタンを見せる
+state.trendPage = 'spot';
+function trendLiveAvailable(){
+  var ms = state.myStats;
+  if(!ms) return false;
+  if(ms.hasLiveRecords) return true;
+  return (ms.spots || []).some(function(s){ return s.live && s.live.unlocked; });
+}
+function renderTrendPageRow(){
+  var avail = trendLiveAvailable();
+  if(!avail) state.trendPage = 'spot';
+  document.getElementById('trendPageRow').classList.toggle('hidden', !avail);
+  document.getElementById('trendPageSpotBtn').classList.toggle('active', state.trendPage==='spot');
+  document.getElementById('trendPageLiveBtn').classList.toggle('active', state.trendPage==='live');
+  document.getElementById('trendSituationRow').classList.toggle('hidden', state.trendPage!=='live');
+}
+onTap(document.getElementById('trendPageSpotBtn'), function(){ state.trendPage='spot'; renderTrendPageRow(); loadTrend(); });
+onTap(document.getElementById('trendPageLiveBtn'), function(){ state.trendPage='live'; renderTrendPageRow(); loadTrend(); });
+document.getElementById('trendSituationSel').addEventListener('change', loadTrend);
 onTap(document.getElementById('trendGranDay'), function(){ setTrendGranularity('day'); });
 onTap(document.getElementById('trendGranWeek'), function(){ setTrendGranularity('week'); });
 onTap(document.getElementById('trendGranMonth'), function(){ setTrendGranularity('month'); });
@@ -1351,12 +1584,16 @@ function fillTrendWhoSelector(){
   if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
 }
 async function loadTrend(){
+  renderTrendPageRow();
   var spotId=document.getElementById('trendSpotSel').value;
   if(!spotId) return;
   var who=document.getElementById('trendWho').value;
   var targetUserId = who==='me' ? state.user.userId : (who==='team' ? '' : who);
   var g = state.trendGranularity;
-  var d = await api('getTrend', { spotId: spotId, userId: state.user.userId, targetUserId: targetUserId, granularity: g });
+  // ライブページではシチュエーション指定(__live__=全ライブ合計)を付ける。スポットページは指定なし記録のみ
+  var payload = { spotId: spotId, userId: state.user.userId, targetUserId: targetUserId, granularity: g };
+  if(state.trendPage === 'live') payload.situation = document.getElementById('trendSituationSel').value;
+  var d = await api('getTrend', payload);
   var labels=d.points.map(function(p){ return formatTrendKey(p.key, g); });
   var data=d.points.map(function(p){ return p.pct; });
   // グラフ部品(Chart.js)が読み込めていない場合(電波不良など)でも、下の表だけは表示する
@@ -1568,11 +1805,12 @@ document.querySelectorAll('nav button').forEach(function(b){
     document.querySelectorAll('nav button').forEach(function(x){x.classList.remove('active');});
     b.classList.add('active');
     var tab=b.dataset.tab;
-    ['record','my','team','trend','settings'].forEach(function(t){
+    ['record','my','team','trend','trophy','settings'].forEach(function(t){
       document.getElementById('tab-'+t).classList.toggle('hidden', t!==tab);
     });
     if(tab==='team') loadTeam();
     if(tab==='trend') loadTrend();
+    if(tab==='trophy') renderTrophyTab();
     if(tab==='settings'){ renderEditCourt(); renderSpotList(); }
     if(tab==='my') refreshMyTab();
   });

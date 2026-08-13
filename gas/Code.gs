@@ -119,7 +119,9 @@ function actionInit_(body) {
     isHost: isHost,
     myStats: computeMyStats_(spotsMine, shots, userId, 'month', ym),
     history: computeHistory_(spots, shots, userId, 20),
-    streak: computeStreak_(shots, userId)
+    streak: computeStreak_(shots, userId),
+    myTrophies: getMyTrophies_(userId),
+    trophyTotal: TROPHY_DEFS.length
   };
   if (isHost) result.members = uniqueMembers_(shots);
   return result;
@@ -249,11 +251,15 @@ function actionRecordShot_(body) {
 
   var spots = getSpots_(actingUserId);
   if (!shots) shots = getShots_();
+  // トロフィーは記録の持ち主(代理記録なら対象メンバー)に対して判定する。重複保存の再送時は判定しない
+  var newTrophies = dupRow ? [] : evaluateTrophies_(userId, displayName, shots);
   return {
     id: id, ym: dupRow ? dupRow.ym : ym, duplicate: dupRow ? true : undefined,
     myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
     history: computeHistory_(spots, shots, actingUserId, 20),
-    streak: computeStreak_(shots, actingUserId)
+    streak: computeStreak_(shots, actingUserId),
+    newTrophies: newTrophies,
+    trophyOwner: userId
   };
 }
 
@@ -372,6 +378,13 @@ function actionGetTeamStats_(body) {
   var allSpots = agg.allSpots;
   var allUsers = agg.allUsers;
 
+  // 連続シューティング日数(全員に公開)。続いている人だけを載せ、細かい順位はつけない
+  var allShotsForStreak = getShots_();
+  var streaks = uniqueMembers_(allShotsForStreak).map(function (m) {
+    return { name: m.name, streak: computeStreak_(allShotsForStreak, m.userId) };
+  }).filter(function (x) { return x.streak >= 1; })
+    .sort(function (a, b) { return b.streak - a.streak; });
+
   var pctRanked = allUsers.filter(function (u) { return attemptsOf_(u, spotId) > 0; })
     .sort(function (a, b) { return pctOf_(b, spotId) - pctOf_(a, spotId); });
   // 左右コーナー・ウイング・スロット・トップの7スポット合計で見るスリーポイントランキング
@@ -392,7 +405,7 @@ function actionGetTeamStats_(body) {
   if (isHost) {
     var spotsMetaAll = allSpots.map(function (s) { return { spotId: s.id, name: s.name, scope: s.scope, ownerId: s.ownerId }; });
     return {
-      ym: ym, spots: spotsMetaAll, users: allUsers,
+      ym: ym, spots: spotsMetaAll, users: allUsers, streaks: streaks,
       pctRanking: pctRanked.map(function (u) {
         var s = spotStatOf_(u, spotId);
         return { userId: u.userId, name: u.name, makes: spotId ? s.makes : u.total.makes, attempts: attemptsOf_(u, spotId), pct: pctOf_(u, spotId) };
@@ -417,7 +430,7 @@ function actionGetTeamStats_(body) {
   var spotsMetaShared = allSpots.filter(function (s) { return s.scope !== 'personal'; })
     .map(function (s) { return { spotId: s.id, name: s.name }; });
   return {
-    ym: ym, spots: spotsMetaShared,
+    ym: ym, spots: spotsMetaShared, streaks: streaks,
     // 表示に使うのは名前と本数だけなので、LINEユーザーIDは渡さない
     countRanking: countRanked.map(function (u) {
       return { name: u.name, attempts: u.totalAttemptsAll };
@@ -458,9 +471,15 @@ function actionGetTrend_(body) {
       .forEach(function (sp) { threePointIds[sp.id] = true; });
   }
 
+  // situation 未指定: スポットシューティング(指定なし)のみ / '__live__': ライブ全体 / 個別名: そのシチュエーションのみ
+  var sitFilter = String(body.situation || '') || null;
+
   var shots = getShots_();
   var byKey = {};
   shots.forEach(function (s) {
+    if (sitFilter === null) { if (s.situation) return; }
+    else if (sitFilter === '__live__') { if (!s.situation) return; }
+    else if (s.situation !== sitFilter) return;
     var matches = threePointIds ? !!threePointIds[s.spotId] : (s.spotId === spotId);
     if (!matches) return;
     if (targetUserId && s.userId !== targetUserId) return;
@@ -483,6 +502,120 @@ function actionGetHistory_(body) {
   }
   var limit = Math.min(200, Math.max(1, Math.floor(Number(body.limit) || 50)));
   return { items: computeHistory_(getSpots_(targetUserId), getShots_(), targetUserId, limit) };
+}
+
+// ===== トロフィー(実績) ==========================================
+// 隠し要素。獲得するまで存在を見せない。最初の1個は必ず「3日連続シューティング」になるよう、
+// それを獲得するまで他のトロフィーは判定しない(簡単なもので先に開いて興ざめしないように)。
+// チーム内で誰も獲得したことがないトロフィーを解放した瞬間は、全員に「誰かが新しいトロフィーを解放した」
+// ことだけをLINE通知する(内容は秘密。会話のきっかけになるように)。
+var SHEET_TROPHIES = 'Trophies';
+var TROPHY_GATEWAY_ID = 'streak_3';
+var TROPHY_DEFS = [
+  { id: 'streak_3',    name: '3日連続シューティング',        tier: 'bronze' },
+  { id: 'streak_7',    name: '7日連続シューティング',        tier: 'silver' },
+  { id: 'streak_30',   name: '30日連続シューティング',       tier: 'gold'   },
+  { id: 'month_1000',  name: '月間1000本',                   tier: 'bronze' },
+  { id: 'month_10000', name: '月間10000本',                  tier: 'silver' },
+  { id: 'month_20000', name: '月間20000本',                  tier: 'gold'   },
+  { id: 'layup_10',    name: 'レイアップ10本',               tier: 'bronze' },
+  { id: 'layup_100',   name: 'レイアップ100本',              tier: 'silver' },
+  { id: 'layup_1000',  name: 'レイアップ1000本',             tier: 'gold'   },
+  { id: 'perfect_10',  name: 'パーフェクト(1回の記録で10本以上100%)', tier: 'silver' }
+];
+
+// ユーザーの現在の実績値からトロフィー条件を満たすかを判定する
+function trophyConditionMet_(def, userId, shots, spots) {
+  if (def.id.indexOf('streak_') === 0) {
+    var need = Number(def.id.split('_')[1]);
+    return computeStreak_(shots, userId) >= need;
+  }
+  if (def.id.indexOf('month_') === 0) {
+    var needM = Number(def.id.split('_')[1]);
+    var ym = currentYm_();
+    var total = 0;
+    shots.forEach(function (s) { if (s.userId === userId && s.ym === ym) total += s.attempts; });
+    return total >= needM;
+  }
+  if (def.id.indexOf('layup_') === 0) {
+    var needL = Number(def.id.split('_')[1]);
+    // 名前に「レイアップ」を含むスポット(共通・個人問わず)への総試投数
+    var layupIds = {};
+    spots.forEach(function (sp) { if (sp.name.indexOf('レイアップ') !== -1) layupIds[sp.id] = true; });
+    var totalL = 0;
+    shots.forEach(function (s) { if (s.userId === userId && layupIds[s.spotId]) totalL += s.attempts; });
+    return totalL >= needL;
+  }
+  if (def.id === 'perfect_10') {
+    return shots.some(function (s) { return s.userId === userId && s.attempts >= 10 && s.makes === s.attempts; });
+  }
+  return false;
+}
+
+function getTrophyRows_() {
+  var sh = getSheet_(SHEET_TROPHIES);
+  return sh.getDataRange().getValues();
+}
+
+function getMyTrophies_(userId) {
+  var rows = getTrophyRows_();
+  var byId = {}; TROPHY_DEFS.forEach(function (d) { byId[d.id] = d; });
+  var out = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) !== userId) continue;
+    var def = byId[String(rows[i][1])];
+    if (def) out.push({ id: def.id, name: def.name, tier: def.tier, earnedAt: textCell_(rows[i][2]) });
+  }
+  return out;
+}
+
+// 記録保存後に呼ぶ。新規獲得したトロフィーの配列を返す(なければ空)。
+// 「チーム内で誰も持っていなかったトロフィー」を獲得した場合は全員へ匿名内容の通知を送る。
+function evaluateTrophies_(userId, displayName, shots) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(15000); } catch (e) { return []; } // 混雑時は次回の保存時に再判定される
+  var newOnes = [];
+  var anyWorldFirst = false;
+  try {
+    var rows = getTrophyRows_();
+    var mine = {}; var teamHas = {};
+    for (var i = 1; i < rows.length; i++) {
+      if (!rows[i][1]) continue;
+      teamHas[String(rows[i][1])] = true;
+      if (String(rows[i][0]) === userId) mine[String(rows[i][1])] = true;
+    }
+    var spots = getSpots_(null, true);
+    // ゲート: 最初のトロフィーは必ず3日連続。未獲得の間は他を判定しない。
+    // 獲得したその保存では3日連続だけを付与し、他は次の保存から判定する(初解放の瞬間を薄めない)
+    var defsToCheck = mine[TROPHY_GATEWAY_ID]
+      ? TROPHY_DEFS
+      : TROPHY_DEFS.filter(function (d) { return d.id === TROPHY_GATEWAY_ID; });
+    var sh = getSheet_(SHEET_TROPHIES);
+    defsToCheck.forEach(function (def) {
+      if (mine[def.id]) return;
+      if (!trophyConditionMet_(def, userId, shots, spots)) return;
+      sh.appendRow([userId, def.id, new Date().toISOString(), displayName]);
+      newOnes.push({ id: def.id, name: def.name, tier: def.tier });
+      if (!teamHas[def.id]) anyWorldFirst = true;
+      teamHas[def.id] = true;
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  if (anyWorldFirst) {
+    // 内容は伏せて「誰かが何かを解放した」ことだけ全員(本人以外)に伝える
+    try {
+      var memberMap = {};
+      getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+      uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
+      Object.keys(memberMap).forEach(function (uid) {
+        if (uid === userId) return;
+        if (uid.indexOf('proxy-') === 0) return; // 代理記録用の仮メンバーはLINEに存在しない
+        pushLineMessageTo_(uid, '🏆 今、' + displayName + 'さんが新しいトロフィーを解放しました！\n(内容はひみつ。本人に聞いてみよう)');
+      });
+    } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
+  }
+  return newOnes;
 }
 
 // ===== 集計ロジック(使い回し用) ==================================
@@ -561,17 +694,22 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
   }
   var bySpot = {};
   var bySituation = {};
+  var hasLive = false; // 期間に関係なく、ライブ記録を一度でも持っているか(推移タブのライブ切替の表示判定用)
   shots.forEach(function (s) {
     if (s.userId !== userId) return;
+    if (s.situation) hasLive = true;
     if (targetKey) {
       var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;
       if (key !== targetKey) return;
     }
-    var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
-    b.makes += s.makes; b.attempts += s.attempts;
     var sitKey = s.situation || '';
     var sb = bySituation[sitKey] || (bySituation[sitKey] = { makes: 0, attempts: 0 });
     sb.makes += s.makes; sb.attempts += s.attempts;
+    // スポット別・合計の確率はスポットシューティング(指定なし)のみで計算する。
+    // ライブ分は上のシチュエーション別内訳にだけ入る(難易度が違う確率を混ぜない)
+    if (s.situation) return;
+    var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
   });
   var liveMap = computeLiveStatus_(shots, userId);
   var noLive = { unlocked: false, ever: false, weekAttempts: 0, windowMakes: 0, windowAttempts: 0, windowPct: 0 };
@@ -591,7 +729,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
       var v = bySituation[k];
       return { key: k, name: k || '指定なし', makes: v.makes, attempts: v.attempts, pct: pct_(v.makes, v.attempts) };
     });
-  return { granularity: granularity, period: period, spots: stats, situations: situations, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
+  return { granularity: granularity, period: period, spots: stats, situations: situations, hasLiveRecords: hasLive, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
 }
 
 function computeHistory_(spots, shots, userId, limit) {
@@ -714,9 +852,12 @@ function getTeamAggregate_(ym) {
     if (ym && s.ym !== ym) return;
     var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0 });
     u.name = s.displayName || u.name; // 最新表示名で上書き
+    u.taAll += s.attempts; // 本数ランキング用: 個人スポット分もライブ分もすべて合算する(打った本数は打った本数)
+    // 確率系の集計はスポットシューティング(シチュエーション指定なし)のみ。
+    // ライブは難易度が高く、混ぜると確率が下がって「確率を守るためにライブを打たない」動機になってしまうため
+    if (s.situation) return;
     var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
-    u.taAll += s.attempts; // 本数ランキング用: マイページ(個人スポット)分も合算する
     // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
     if (scopeOf[s.spotId] !== 'personal') { u.tm += s.makes; u.ta += s.attempts; }
   });
@@ -813,6 +954,8 @@ function getSheet_(name) {
       sh.appendRow(['id', 'timestamp', 'ym', 'date', 'userId', 'displayName', 'spotId', 'makes', 'attempts', 'situation']);
     } else if (name === 'KnownUsers') {
       sh.appendRow(['userId', 'displayName', 'firstSeenAt']);
+    } else if (name === SHEET_TROPHIES) {
+      sh.appendRow(['userId', 'trophyId', 'earnedAt', 'displayName']);
     }
   }
   return sh;
