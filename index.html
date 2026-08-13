@@ -71,6 +71,10 @@
   .stepper .val{flex:1; text-align:center; font-size:30px; font-weight:800;}
   .quick{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;}
   .quick button{padding:8px 12px; background:var(--card2); border:1px solid var(--line); border-radius:999px; font-size:13px;}
+  .quick button.on{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700;}
+  /* 鍵が外れて飛び出すようなポップ演出 */
+  @keyframes unlockPop{0%{transform:scale(.2) rotate(-20deg); opacity:0} 55%{transform:scale(1.35) rotate(8deg)} 100%{transform:scale(1) rotate(0deg); opacity:1}}
+  .unlock-pop{animation:unlockPop .9s cubic-bezier(.2,1.5,.4,1) both;}
 
   table{width:100%; border-collapse:collapse; font-size:13px;}
   th,td{padding:7px 6px; border-bottom:1px solid var(--line); text-align:right;}
@@ -139,6 +143,10 @@
     <div class="card">
       <div class="row"><b class="grow">マイスタッツ</b><span class="pill" id="myTotal"></span></div>
       <div id="myStats"></div>
+    </div>
+    <div class="card hidden" id="mySituationsCard">
+      <div class="row"><b class="grow">シチュエーション別</b></div>
+      <div id="mySituations"></div>
     </div>
   </section>
 
@@ -290,6 +298,10 @@
         <button data-t="makes" data-d="1">＋</button>
       </div>
     </div>
+    <div style="margin-top:14px" id="recSituationRow" class="hidden">
+      <div class="muted" id="recSituationLabel">シチュエーション（任意）</div>
+      <div class="quick" id="recSituation"></div>
+    </div>
     <div class="row" style="margin-top:14px; gap:8px">
       <div class="grow">
         <div class="muted">日付</div>
@@ -302,6 +314,16 @@
     </div>
     <button class="btn" id="recSave" style="margin-top:16px">保存する</button>
     <button class="btn sub hidden" id="recDeleteBtn" style="margin-top:10px; color:var(--bad); border-color:var(--bad)">この記録を削除</button>
+  </div>
+</div>
+
+<!-- ライブシューティング解放の演出(記録直後に全画面で目立たせ、タップするまで閉じない) -->
+<div class="sheet-bg" id="unlockBg" style="align-items:center; justify-content:center; z-index:60;">
+  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:var(--accent)">
+    <div id="unlockEmoji" style="font-size:60px">🔓</div>
+    <b id="unlockTitle" style="display:block; margin-top:10px; font-size:19px">ライブシューティング解放！</b>
+    <div class="muted" id="unlockDesc" style="margin-top:10px; line-height:1.7; font-size:13px"></div>
+    <button class="btn" id="unlockCloseBtn" style="margin-top:20px">ライブシューティングを打つ 🔥</button>
   </div>
 </div>
 
@@ -332,6 +354,7 @@ var state = {
   trendGranularity: 'month', // 推移タブの粒度: 'day' | 'week' | 'month'
   myGranularity: 'month',    // マイタブの粒度: 'day' | 'week' | 'month'
   movingSpotId: null,        // 移動中のスポットID(nullなら移動モードではない)
+  recSituation: '',          // 記録シートで選択中のシチュエーション(''=指定なし)。セッション中は維持
   saveToken: null,           // 新規記録の保存ID。リトライや保存ボタン連打でも同じIDになり二重登録を防ぐ
   streak: 0,                 // 連続練習日数(ヘッダーのバッジに表示)
   pendingShots: [],          // オフライン等でまだサーバーに送れていない新規記録のキュー
@@ -340,9 +363,18 @@ var state = {
 };
 
 function currentPageSpots(){
+  // マイページのスポットは「いま記録する対象者(通常は自分、代理記録中はその相手)」の個人スポットだけを出す。
+  // ホストのstate.spotsには全員分の個人スポットが入っているため、ownerIdで絞り込む必要がある。
+  var targetId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
   return state.spots.filter(function(sp){
-    return state.recordPage === 'personal' ? sp.scope === 'personal' : sp.scope !== 'personal';
+    return state.recordPage === 'personal'
+      ? (sp.scope === 'personal' && sp.ownerId === targetId)
+      : sp.scope !== 'personal';
   });
+}
+// 自分に関係するスポットだけ(共通+自分の個人)。推移セレクタや設定タブなど「自分視点」の画面で使う
+function myVisibleSpots(){
+  return state.spots.filter(function(sp){ return sp.scope !== 'personal' || sp.ownerId === state.user.userId; });
 }
 
 // LINEアプリ内WebViewは、画面表示直後の1回目のタップが click として発火しない事があるため、
@@ -676,7 +708,9 @@ function renderCourt(){
   var pageSpots = currentPageSpots();
   if(!pageSpots.length){
     var empty=document.createElement('div'); empty.className='muted center'; empty.style.padding='30px 0';
-    empty.textContent = state.recordPage==='personal' ? 'マイページのスポットはまだありません(設定タブから追加できます)' : '共通スポットがありません';
+    empty.textContent = state.recordPage==='personal'
+      ? (state.recordingAs ? state.recordingAs.name+'さんの個人スポットはまだありません' : 'マイページのスポットはまだありません(設定タブから追加できます)')
+      : '共通スポットがありません';
     wrap.appendChild(empty);
   }
   pageSpots.forEach(function(sp){
@@ -685,7 +719,8 @@ function renderCourt(){
     el.className='spot';
     el.style.left = sp.x + '%'; el.style.top = sp.y + '%';
     var label = st && st.attempts>0 ? (st.makes+'/'+st.attempts) : '記録';
-    el.innerHTML = '<div class="dot">'+label+'</div><div class="lab">'+esc(sp.name)+
+    var liveMark = st && st.live && st.live.unlocked ? ' 🔓' : '';
+    el.innerHTML = '<div class="dot">'+label+'</div><div class="lab">'+esc(sp.name)+liveMark+
       (st && st.attempts>0 ? ' <b>'+st.pct+'%</b>':'')+'</div>';
     onTap(el, function(){ openRecord(sp); });
     wrap.appendChild(el);
@@ -695,8 +730,8 @@ function renderEditCourt(){
   document.getElementById('editCourtSvg').innerHTML = courtSvgMarkup();
   var wrap = document.getElementById('editCourtWrap');
   Array.prototype.slice.call(wrap.querySelectorAll('.spot')).forEach(function(n){n.remove();});
-  // 既存スポットを薄く表示
-  state.spots.forEach(function(sp){
+  // 既存スポットを薄く表示(自分に関係する分だけ。ホストでも他人の個人スポットまでは出さない)
+  myVisibleSpots().forEach(function(sp){
     var el=document.createElement('div'); el.className='spot small';
     el.style.left=sp.x+'%'; el.style.top=sp.y+'%'; el.style.opacity='.5';
     el.innerHTML='<div class="dot">•</div>';
@@ -720,6 +755,50 @@ function renderEditCourt(){
 
 // ================= 記録入力 =================
 var rec = { makes:5, attempts:10 };
+// シチュエーション(ライブシューティング)。'' = 指定なし(普通のスポットシューティング)。
+// スポットごとに「今週のスポットシューティング直近30本が50%以上」で解放される隠し要素。
+// 一度も達成していないスポットでは存在自体を見せない。週が変わる(月曜)と再ロック。
+// 同じ練習中に何度も選び直さなくて済むよう、選択はアプリを開いている間は維持する
+var SITUATIONS = ['HO', 'チェック', 'ミート', 'ドリブル'];
+function liveForSpot(spotId){
+  var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
+  if(!statsSource) return null;
+  var s = statsSource.spots.find(function(x){ return x.spotId === spotId; });
+  return (s && s.live) ? s.live : null;
+}
+function renderSituationChips(){
+  var row = document.getElementById('recSituationRow');
+  var label = document.getElementById('recSituationLabel');
+  var q = document.getElementById('recSituation'); q.innerHTML='';
+  var live = state.current ? liveForSpot(state.current.id) : null;
+  var editingWithSituation = !!(state.editingShotId && state.recSituation);
+
+  // 解放中(または過去のライブ記録の編集中)だけ選択チップを出す
+  if((live && live.unlocked) || editingWithSituation){
+    row.classList.remove('hidden');
+    label.textContent = '🔥 ライブシューティング(シチュエーションを選択)';
+    [''].concat(SITUATIONS).forEach(function(sit){
+      var b = document.createElement('button');
+      b.textContent = sit || '指定なし';
+      if(state.recSituation === sit) b.classList.add('on');
+      onTap(b, function(){ state.recSituation = sit; renderSituationChips(); });
+      q.appendChild(b);
+    });
+    return;
+  }
+
+  // ロック中でも、過去に一度でも解放したことがあるスポットなら進捗を見せる(初達成までは完全に隠す)
+  state.recSituation = '';
+  if(live && live.ever){
+    row.classList.remove('hidden');
+    var need = Math.max(0, 30 - live.windowAttempts);
+    label.textContent = need > 0
+      ? '🔒 ライブシューティング(今週のスポットシューティングあと'+need+'本で判定。直近'+live.windowAttempts+'本 '+live.windowPct+'%)'
+      : '🔒 ライブシューティング(直近30本 '+live.windowPct+'% / 50%以上で解放)';
+    return;
+  }
+  row.classList.add('hidden');
+}
 function openRecord(sp){
   state.current = sp;
   state.editingShotId = null;
@@ -731,6 +810,7 @@ function openRecord(sp){
   document.getElementById('recDate').value = todayStr();
   document.getElementById('recDeleteBtn').classList.add('hidden');
   renderQuick();
+  renderSituationChips();
   syncRecUI();
   document.getElementById('recSheetBg').classList.add('open');
 }
@@ -738,12 +818,14 @@ function openEditShot(item){
   state.current = { id: item.spotId, name: item.spot };
   state.editingShotId = item.id;
   rec = { makes: item.makes, attempts: item.attempts };
+  state.recSituation = item.situation || '';
   var who = state.recordingAs ? '・'+state.recordingAs.name+'さん' : '';
   var pendingTag = item.pending ? '(未送信' + who + ')' : '(編集' + who + ')';
   document.getElementById('recSpotName').textContent = (item.pending ? '📴 ' : '✏️ ') + item.spot + pendingTag;
   document.getElementById('recDate').value = item.date;
   document.getElementById('recDeleteBtn').classList.remove('hidden');
   renderQuick();
+  renderSituationChips();
   syncRecUI();
   document.getElementById('recSheetBg').classList.add('open');
 }
@@ -778,7 +860,7 @@ var handledSaveTokens = {};
 onTap(document.getElementById('recSave'), async function(){
   var btn = document.getElementById('recSave');
   var target = state.recordingAs || { userId: state.user.userId, name: state.user.displayName };
-  var dateVal = document.getElementById('recDate').value || localDateStr();
+  var dateVal = document.getElementById('recDate').value || todayStr();
 
   // 未送信(まだサーバーに届いていない)記録の編集は、通信不要でその場で直す
   if(state.editingShotId && isPendingId(state.editingShotId)){
@@ -808,6 +890,7 @@ onTap(document.getElementById('recSave'), async function(){
         shotId: state.editingShotId, actingUserId: state.user.userId,
         makes: rec.makes, attempts: rec.attempts,
         date: dateVal,
+        situation: state.recSituation,
         viewYm: state.ym
       });
       toast('更新しました ✅');
@@ -835,6 +918,7 @@ onTap(document.getElementById('recSave'), async function(){
     date: dateVal,
     ym: dateVal.slice(0,7),
     spotName: state.current.name,
+    situation: state.recSituation,
     viewYm: state.ym,
     clientId: token
   };
@@ -912,9 +996,42 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
 
 // ================= マイ =================
 function applyMyStats(stats){
+  detectLiveUnlocks(state.myStats, stats);
   state.myStats = stats;
   renderMyStatsView(stats);
 }
+// ライブシューティングが「解放された瞬間」を検出して演出を出す。
+// 前回データにlive情報が無い場合(旧キャッシュや初回取得)は、誤爆防止のため演出しない
+function detectLiveUnlocks(prevStats, newStats){
+  if(!prevStats || !newStats || !prevStats.spots || !newStats.spots) return;
+  var prevBySpot = {};
+  prevStats.spots.forEach(function(s){ if(s.live) prevBySpot[s.spotId] = s.live; });
+  for(var i=0; i<newStats.spots.length; i++){
+    var s = newStats.spots[i];
+    var prev = prevBySpot[s.spotId];
+    if(!prev || !s.live) continue;
+    if(!prev.unlocked && s.live.unlocked){
+      showLiveUnlock(s, !prev.ever);
+      break; // 同時に複数解放しても演出は1つずつ(まれなケース)
+    }
+  }
+}
+var unlockSpotId = null;
+function showLiveUnlock(spotStat, firstEver){
+  unlockSpotId = spotStat.spotId;
+  document.getElementById('unlockDesc').innerHTML = firstEver
+    ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>このスポットの記録画面にシチュエーション(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は週ごと。月曜にリセットされ、また挑戦できます</span>'
+    : '<b>'+esc(spotStat.name)+'</b>の今週のライブシューティングが解放されました！<br>記録画面でシチュエーションを選べます。';
+  var em = document.getElementById('unlockEmoji');
+  em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
+  document.getElementById('unlockBg').classList.add('open');
+}
+onTap(document.getElementById('unlockCloseBtn'), function(){
+  document.getElementById('unlockBg').classList.remove('open');
+  var sp = state.spots.find(function(x){ return x.id === unlockSpotId; });
+  unlockSpotId = null;
+  if(sp) openRecord(sp); // そのままライブシューティングを打ちに行けるよう記録シートを開き直す
+});
 function renderMyStatsView(stats){
   var t = stats.total;
   document.getElementById('myTotal').textContent = '合計 '+t.makes+'/'+t.attempts+' ('+t.pct+'%)';
@@ -928,6 +1045,23 @@ function renderMyStatsView(stats){
       +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
     host.appendChild(div);
   });
+  // シチュエーション別内訳(記録があるときだけカードを出す。指定なしのみの場合も隠して普段の画面をシンプルに保つ)
+  var sits = (stats.situations || []).filter(function(s){ return s.attempts > 0; });
+  var showSits = sits.length > 1 || (sits.length === 1 && sits[0].key !== '');
+  var sitCard = document.getElementById('mySituationsCard');
+  if(sitCard){
+    sitCard.classList.toggle('hidden', !showSits);
+    var sitHost = document.getElementById('mySituations'); sitHost.innerHTML='';
+    if(showSits) sits.forEach(function(s){
+      var div=document.createElement('div'); div.style.margin='10px 0';
+      div.innerHTML =
+        '<div class="row"><span class="grow">'+esc(s.name)+'</span>'
+        +'<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
+        +'<b class="pct">'+s.pct+'%</b></div>'
+        +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
+      sitHost.appendChild(div);
+    });
+  }
 }
 async function loadMyStats(){
   applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
@@ -968,7 +1102,7 @@ function renderHistoryList(){
     .filter(function(p){ return p.userId === viewUserId; })
     .slice().reverse()
     .map(function(p){
-      return { id:p.clientId, date:p.date, ym:p.ym, spotId:p.spotId, spot:p.spotName,
+      return { id:p.clientId, date:p.date, ym:p.ym, spotId:p.spotId, spot:p.spotName, situation:p.situation||'',
         makes:p.makes, attempts:p.attempts, pct: p.attempts>0 ? Math.round(p.makes/p.attempts*1000)/10 : 0, pending:true };
     });
   var merged = pendingView.concat(state.historyItems);
@@ -977,7 +1111,8 @@ function renderHistoryList(){
   merged.forEach(function(it){
     var el=document.createElement('div'); el.className='listitem'; el.style.cursor='pointer';
     var tag = it.pending ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>' : '';
-    el.innerHTML='<span>'+esc(it.spot)+' <span class="muted" style="font-size:12px">'+it.date+'</span>'+tag+'</span>'
+    var sitTag = it.situation ? ' <span class="pill" style="color:var(--accent2); border-color:var(--accent2)">'+esc(it.situation)+'</span>' : '';
+    el.innerHTML='<span>'+esc(it.spot)+sitTag+' <span class="muted" style="font-size:12px">'+it.date+'</span>'+tag+'</span>'
       +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span> <span class="muted">›</span></span>';
     onTap(el, function(){ openEditShot(it); });
     host.appendChild(el);
@@ -996,7 +1131,7 @@ function fillSpotSelectors(){
     var sel=document.getElementById(id); if(!sel) return;
     var prev=sel.value; sel.innerHTML='';
     // チームのランキング系セレクタは共通スポットのみ(個人スポットを比較対象にしない)。推移は自分の全スポット対象。
-    var list = (id==='trendSpotSel') ? state.spots : state.spots.filter(function(sp){ return sp.scope !== 'personal'; });
+    var list = (id==='trendSpotSel') ? myVisibleSpots() : state.spots.filter(function(sp){ return sp.scope !== 'personal'; });
     if(id==='teamSpotSel' || id==='teamSpotSelMe'){ var all=document.createElement('option'); all.value=''; all.textContent='合計(全スポット)'; sel.appendChild(all); }
     if(id==='trendSpotSel'){ var tp=document.createElement('option'); tp.value='__threepoint__'; tp.textContent='スリーポイント合計'; sel.appendChild(tp); }
     list.forEach(function(sp){ var o=document.createElement('option'); o.value=sp.id; o.textContent=sp.name; sel.appendChild(o); });
@@ -1250,9 +1385,16 @@ function updateProxyHint(){
     : '現在は自分の記録として保存されます';
 }
 async function refreshProxyStats(){
-  if(!state.recordingAs){ state.proxyStats = null; return; }
-  try{ state.proxyStats = await api('getMyStats', { userId: state.user.userId, targetUserId: state.recordingAs.userId, ym: state.ym }); }
-  catch(e){ state.proxyStats = null; }
+  if(!state.recordingAs){ state.proxyStats = null; state.proxyStatsUserId = null; return; }
+  try{
+    var freshFor = state.recordingAs.userId;
+    var fresh = await api('getMyStats', { userId: state.user.userId, targetUserId: freshFor, ym: state.ym });
+    // 代理記録中の相手が解放した瞬間もホストの画面で祝う(対象者が同じ人のときだけ比較する)
+    detectLiveUnlocks(state.proxyStatsUserId === freshFor ? state.proxyStats : null, fresh);
+    state.proxyStats = fresh;
+    state.proxyStatsUserId = freshFor;
+  }
+  catch(e){ state.proxyStats = null; state.proxyStatsUserId = null; }
 }
 
 // ================= 設定(表示名) =================
@@ -1360,7 +1502,8 @@ function renderSpotList(){
     host.appendChild(el);
   }
   var shared = state.spots.filter(function(sp){ return sp.scope !== 'personal'; });
-  var personal = state.spots.filter(function(sp){ return sp.scope === 'personal'; });
+  // 設定タブで編集できる個人スポットは自分の分だけ(ホストのstate.spotsには全員分が入っているため絞る)
+  var personal = state.spots.filter(function(sp){ return sp.scope === 'personal' && sp.ownerId === state.user.userId; });
   if(!shared.length) sharedHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
   else shared.forEach(function(sp){ row(sp, sharedHost, state.isHost); });
   if(!personal.length) personalHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
@@ -1387,8 +1530,6 @@ document.querySelectorAll('nav button').forEach(function(b){
 function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
 function genId(){ return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10); }
-// 端末のタイムゾーンでの今日の日付(YYYY-MM-DD)。toISOString()はUTCになり日本の夜は日付がずれるため使わない
-function localDateStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
 var toastTimer;
 function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show');},1800); }

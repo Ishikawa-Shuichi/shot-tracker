@@ -103,15 +103,21 @@ function doPost(e) {
 function actionInit_(body) {
   var userId = String(body.userId || '');
   var ym = currentYm_();
-  var spots = getSpots_(userId); // 共通 + 自分の個人スポット
-  var shots = getShots_();
   var isHost = !!userId && userId === HOST_USER_ID;
+  // ホストには全員分の個人スポットも渡す(代理記録時に相手のマイページスポットへ記録できるように)。
+  // クライアント側は ownerId を見て「いま記録している対象者の分」だけを表示する。
+  var spots = isHost ? getSpots_(userId, true) : getSpots_(userId);
+  // 自分の統計に他人の個人スポットが混ざらないよう、集計には自分に見える分だけを使う
+  var spotsMine = isHost
+    ? spots.filter(function (sp) { return sp.scope !== 'personal' || sp.ownerId === userId; })
+    : spots;
+  var shots = getShots_();
   var result = {
     spots: spots,
     ym: ym,
     serverTime: new Date().toISOString(),
     isHost: isHost,
-    myStats: computeMyStats_(spots, shots, userId, 'month', ym),
+    myStats: computeMyStats_(spotsMine, shots, userId, 'month', ym),
     history: computeHistory_(spots, shots, userId, 20),
     streak: computeStreak_(shots, userId)
   };
@@ -206,6 +212,9 @@ function actionRecordShot_(body) {
   var d = dateStr ? new Date(dateStr + 'T00:00:00') : new Date();
   var ym = ymOf_(d);
 
+  // シチュエーション(任意)。'' = 指定なし(=スポットシューティング)。HO/チェック/ミート/ドリブルなど
+  var situation = String(body.situation || '').trim().slice(0, 20);
+
   // 通信リトライで同じ保存が二重実行されても記録が重複しないよう、
   // クライアントが発行したID(clientId)を記録IDに使い、既に存在すれば追記せず成功として返す(冪等化)。
   // さらに保存ボタン連打などで同じclientIdの保存が「同時に」届いた場合も両方追記されないよう、
@@ -230,7 +239,7 @@ function actionRecordShot_(body) {
       var sh = getSheet_(SHEET_SHOTS);
       sh.appendRow([
         id, new Date().toISOString(), ym, dateOf_(d),
-        userId, displayName, spotId, makes, attempts
+        userId, displayName, spotId, makes, attempts, situation
       ]);
       invalidateShotsCache_();
     }
@@ -270,6 +279,7 @@ function actionUpdateShot_(body) {
     }
     sh.getRange(i + 1, 8).setValue(makes);
     sh.getRange(i + 1, 9).setValue(attempts);
+    if (body.situation != null) sh.getRange(i + 1, 10).setValue(String(body.situation).trim().slice(0, 20));
     invalidateShotsCache_();
 
     var spots = getSpots_(actingUserId);
@@ -477,6 +487,67 @@ function actionGetHistory_(body) {
 
 // ===== 集計ロジック(使い回し用) ==================================
 
+// ---- ライブシューティング解放判定 ----
+// そのスポットの「今週のスポットシューティング(シチュエーション指定なし)」で、
+// 直近30本(記録単位で30本以上になる最小の末尾)の確率が50%以上になった瞬間に解放。
+// 一度達成すればその週の間は解放が維持され、週が変わる(月曜)と再ロックされる。
+// ever(過去に一度でも達成したことがあるか)は、初達成までUIに存在自体を見せない隠し要素判定に使う。
+var LIVE_UNLOCK_ATTEMPTS = 30;
+var LIVE_UNLOCK_RATE = 0.5;
+
+// 週内の記録(時系列)を1件ずつ進めながら、その時点の直近30本が50%以上になった瞬間があったか
+function liveCheckWeek_(recs) {
+  for (var i = 0; i < recs.length; i++) {
+    var a = 0, m = 0;
+    for (var j = i; j >= 0; j--) {
+      a += recs[j].attempts; m += recs[j].makes;
+      if (a >= LIVE_UNLOCK_ATTEMPTS) break;
+    }
+    if (a >= LIVE_UNLOCK_ATTEMPTS && m / a >= LIVE_UNLOCK_RATE) return true;
+  }
+  return false;
+}
+
+// spotId -> {unlocked, ever, weekAttempts, windowMakes, windowAttempts, windowPct}
+function computeLiveStatus_(shots, userId) {
+  var thisWeek = weekKeyOf_(dateOf_(new Date()));
+  var bySpotWeek = {};
+  shots.forEach(function (s) {
+    if (s.userId !== userId) return;
+    if (s.situation) return; // 解放判定はスポットシューティング(指定なし)のみで数える
+    var wk = weekKeyOf_(s.date);
+    var spotMap = bySpotWeek[s.spotId] || (bySpotWeek[s.spotId] = {});
+    (spotMap[wk] || (spotMap[wk] = [])).push(s);
+  });
+  var out = {};
+  Object.keys(bySpotWeek).forEach(function (spotId) {
+    var weeks = bySpotWeek[spotId];
+    var ever = false, unlocked = false, weekAttempts = 0, windowMakes = 0, windowAttempts = 0;
+    Object.keys(weeks).forEach(function (wk) {
+      var recs = weeks[wk];
+      recs.sort(function (a, b) { return a.ts < b.ts ? -1 : 1; }); // 記録した順
+      var hit = liveCheckWeek_(recs);
+      if (hit) ever = true;
+      if (wk === thisWeek) {
+        unlocked = hit;
+        recs.forEach(function (r) { weekAttempts += r.attempts; });
+        var a = 0, m = 0;
+        for (var j = recs.length - 1; j >= 0; j--) {
+          a += recs[j].attempts; m += recs[j].makes;
+          if (a >= LIVE_UNLOCK_ATTEMPTS) break;
+        }
+        windowAttempts = a; windowMakes = m;
+      }
+    });
+    out[spotId] = {
+      unlocked: unlocked, ever: ever, weekAttempts: weekAttempts,
+      windowMakes: windowMakes, windowAttempts: windowAttempts,
+      windowPct: pct_(windowMakes, windowAttempts)
+    };
+  });
+  return out;
+}
+
 function computeMyStats_(spots, shots, userId, granularity, period) {
   // granularity: 'month'(既定) | 'week' | 'day'。period が空/nullなら全期間。
   // week指定時は period(任意の日付)が属する週の月曜日キーに正規化して比較する。
@@ -485,6 +556,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
     targetKey = granularity === 'week' ? weekKeyOf_(period) : period;
   }
   var bySpot = {};
+  var bySituation = {};
   shots.forEach(function (s) {
     if (s.userId !== userId) return;
     if (targetKey) {
@@ -493,13 +565,29 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
     }
     var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
+    var sitKey = s.situation || '';
+    var sb = bySituation[sitKey] || (bySituation[sitKey] = { makes: 0, attempts: 0 });
+    sb.makes += s.makes; sb.attempts += s.attempts;
   });
+  var liveMap = computeLiveStatus_(shots, userId);
+  var noLive = { unlocked: false, ever: false, weekAttempts: 0, windowMakes: 0, windowAttempts: 0, windowPct: 0 };
   var stats = spots.map(function (sp) {
     var b = bySpot[sp.id] || { makes: 0, attempts: 0 };
-    return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+    return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts), live: liveMap[sp.id] || noLive };
   });
   var tot = stats.reduce(function (a, s) { a.makes += s.makes; a.attempts += s.attempts; return a; }, { makes: 0, attempts: 0 });
-  return { granularity: granularity, period: period, spots: stats, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
+  // シチュエーション別の内訳(記録に使われたものだけ返す)。固定の並び順→その他(カスタム等)の順
+  var sitOrder = ['', 'HO', 'チェック', 'ミート', 'ドリブル'];
+  var situations = Object.keys(bySituation)
+    .sort(function (a, b2) {
+      var ia = sitOrder.indexOf(a), ib = sitOrder.indexOf(b2);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    })
+    .map(function (k) {
+      var v = bySituation[k];
+      return { key: k, name: k || '指定なし', makes: v.makes, attempts: v.attempts, pct: pct_(v.makes, v.attempts) };
+    });
+  return { granularity: granularity, period: period, spots: stats, situations: situations, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
 }
 
 function computeHistory_(spots, shots, userId, limit) {
@@ -507,7 +595,7 @@ function computeHistory_(spots, shots, userId, limit) {
   var mine = shots.filter(function (s) { return s.userId === userId; });
   mine.sort(function (a, b) { return a.ts < b.ts ? 1 : -1; }); // 新しい順
   return mine.slice(0, limit).map(function (s) {
-    return { id: s.id, date: s.date, ym: s.ym, spotId: s.spotId, spot: spotName[s.spotId] || '(削除済)', makes: s.makes, attempts: s.attempts, pct: pct_(s.makes, s.attempts) };
+    return { id: s.id, date: s.date, ym: s.ym, spotId: s.spotId, spot: spotName[s.spotId] || '(削除済)', makes: s.makes, attempts: s.attempts, pct: pct_(s.makes, s.attempts), situation: s.situation || '' };
   });
 }
 
@@ -664,7 +752,9 @@ function getShots_() {
       // getShotsRawRows_ が返す行は ts/ym/date を既に正規化済みの文字列にしているので String() で十分
       id: String(r[0]), ts: String(r[1]), ym: String(r[2]), date: String(r[3]),
       userId: String(r[4]), displayName: String(r[5]), spotId: String(r[6]),
-      makes: Number(r[7]) || 0, attempts: Number(r[8]) || 0
+      makes: Number(r[7]) || 0, attempts: Number(r[8]) || 0,
+      // situation列(10列目)は後から追加されたため、古い行には存在しない('' = 指定なし)
+      situation: r[9] != null ? String(r[9]) : ''
     });
   }
   return out;
@@ -716,7 +806,7 @@ function getSheet_(name) {
         sh.appendRow([Utilities.getUuid(), s.name, s.x, s.y, idx, true, new Date().toISOString(), 'shared', '']);
       });
     } else if (name === SHEET_SHOTS) {
-      sh.appendRow(['id', 'timestamp', 'ym', 'date', 'userId', 'displayName', 'spotId', 'makes', 'attempts']);
+      sh.appendRow(['id', 'timestamp', 'ym', 'date', 'userId', 'displayName', 'spotId', 'makes', 'attempts', 'situation']);
     } else if (name === 'KnownUsers') {
       sh.appendRow(['userId', 'displayName', 'firstSeenAt']);
     }
