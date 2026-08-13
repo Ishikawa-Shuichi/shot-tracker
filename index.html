@@ -704,8 +704,8 @@ function courtSvgMarkup(){
 function renderCourt(){
   document.getElementById('courtSvg').innerHTML = courtSvgMarkup();
   var wrap = document.getElementById('courtWrap');
-  // 既存スポットDOM削除
-  Array.prototype.slice.call(wrap.querySelectorAll('.spot')).forEach(function(n){n.remove();});
+  // 既存スポットDOMと空メッセージを削除(消し忘れると再描画のたびに増えていく)
+  Array.prototype.slice.call(wrap.querySelectorAll('.spot, .court-empty')).forEach(function(n){n.remove();});
   var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
   var my = {}; if(statsSource){ statsSource.spots.forEach(function(s){ my[s.spotId]=s; }); }
   document.getElementById('courtHint').textContent = state.recordingAs
@@ -713,7 +713,7 @@ function renderCourt(){
     : 'スポットをタップして記録（この画面の集計は選択中の月）';
   var pageSpots = currentPageSpots();
   if(!pageSpots.length){
-    var empty=document.createElement('div'); empty.className='muted center'; empty.style.padding='30px 0';
+    var empty=document.createElement('div'); empty.className='muted center court-empty'; empty.style.padding='30px 0';
     empty.textContent = state.recordPage==='personal'
       ? (state.recordingAs ? state.recordingAs.name+'さんの個人スポットはまだありません' : 'マイページのスポットはまだありません(設定タブから追加できます)')
       : '共通スポットがありません';
