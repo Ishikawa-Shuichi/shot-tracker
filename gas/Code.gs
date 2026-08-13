@@ -75,7 +75,7 @@ function doPost(e) {
     var data;
     switch (action) {
       case 'init':        data = actionInit_(body); break;
-      case 'getSpots':    data = { spots: getSpots_(String(body.userId || '')) }; break;
+      case 'getSpots':    data = { spots: getSpots_(String(body.userId || ''), String(body.userId || '') === HOST_USER_ID) }; break;
       case 'addSpot':     data = actionAddSpot_(body); break;
       case 'updateSpot':  data = actionUpdateSpot_(body); break;
       case 'deleteSpot':  data = actionDeleteSpot_(body); break;
@@ -142,7 +142,7 @@ function actionAddSpot_(body) {
   var order = sh.getLastRow(); // ヘッダ含む行数 ≒ 追加順
   sh.appendRow([id, name, x, y, order, true, new Date().toISOString(), scope, ownerId]);
   invalidateSpotsCache_();
-  return { spots: getSpots_(userId) };
+  return { spots: getSpots_(userId, userId === HOST_USER_ID) };
 }
 
 function actionUpdateSpot_(body) {
@@ -157,7 +157,7 @@ function actionUpdateSpot_(body) {
       if (body.x != null)    sh.getRange(i + 1, 3).setValue(clampNum_(body.x, 0, 100, rows[i][2]));
       if (body.y != null)    sh.getRange(i + 1, 4).setValue(clampNum_(body.y, 0, 100, rows[i][3]));
       invalidateSpotsCache_();
-      return { spots: getSpots_(userId) };
+      return { spots: getSpots_(userId, userId === HOST_USER_ID) };
     }
   }
   throw new Error('スポットが見つかりません');
@@ -174,7 +174,7 @@ function actionDeleteSpot_(body) {
       assertSpotEditable_(rows[i], userId);
       sh.getRange(i + 1, 6).setValue(false);
       invalidateSpotsCache_();
-      return { spots: getSpots_(userId) };
+      return { spots: getSpots_(userId, userId === HOST_USER_ID) };
     }
   }
   throw new Error('スポットが見つかりません');

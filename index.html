@@ -549,7 +549,10 @@ function applyUserHeader(){
 }
 
 // 起動データ(スポット/統計/履歴など)を画面へ反映する。キャッシュからの即時表示と、最新データでの置き換えの両方で使う
-function applyBootData(d){
+function applyBootData(d, fromCache){
+  // キャッシュ由来の統計は「前回起動時点」の状態のため、最新化した際のライブ解放判定の比較対象にしない
+  // (前セッション中に解放した分を、起動のたびに「いま解放された」と誤検出してしまうのを防ぐ)
+  if(fromCache && d.myStats) d.myStats.__fromCache = true;
   state.spots = d.spots;
   state.isHost = !!d.isHost;
   state.members = d.members || [];
@@ -592,7 +595,7 @@ if(bootCache && bootCache.user && bootCache.data){
   // (保存はタップ即完了+裏送信の方式なので、通信状態に関わらず安全に記録できる)
   state.user = { userId: bootCache.user.userId, displayName: bootCache.user.displayName };
   applyUserHeader();
-  applyBootData(bootCache.data);
+  applyBootData(bootCache.data, true);
   renderedFromCache = true;
 }
 
@@ -768,14 +771,20 @@ var rec = { makes:5, attempts:10 };
 // 選択はコート下のボタン(liveBar)で行い、押し直すまで維持される(同じドリルを続けることが多いため)。
 var SITUATIONS = ['HO', 'チェック', 'ミート', 'ドリブル'];
 var editSituation = ''; // 記録の編集中だけ使う一時的な選択(コート下の選択状態を上書きしないように別持ち)
+// 代理記録中に相手の統計がまだ取れていない間は「不明(=未解放扱い)」にする。
+// 自分の統計で代用すると、自分の解放状態が相手の記録に適用されてしまうため
+function liveStatsSource(){
+  if(state.recordingAs) return state.proxyStats && state.proxyStatsUserId === state.recordingAs.userId ? state.proxyStats : null;
+  return state.myStats;
+}
 function liveForSpot(spotId){
-  var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
+  var statsSource = liveStatsSource();
   if(!statsSource) return null;
   var s = statsSource.spots.find(function(x){ return x.spotId === spotId; });
   return (s && s.live) ? s.live : null;
 }
 function anyLiveUnlocked(){
-  var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
+  var statsSource = liveStatsSource();
   if(!statsSource) return false;
   return statsSource.spots.some(function(s){ return s.live && s.live.unlocked; });
 }
@@ -1044,6 +1053,7 @@ function applyMyStats(stats){
 // 前回データにlive情報が無い場合(旧キャッシュや初回取得)は、誤爆防止のため演出しない
 function detectLiveUnlocks(prevStats, newStats){
   if(!prevStats || !newStats || !prevStats.spots || !newStats.spots) return;
+  if(prevStats.__fromCache) return; // 起動キャッシュとの比較では演出しない(前セッションの解放を誤検出するため)
   var prevBySpot = {};
   prevStats.spots.forEach(function(s){ if(s.live) prevBySpot[s.spotId] = s.live; });
   for(var i=0; i<newStats.spots.length; i++){
