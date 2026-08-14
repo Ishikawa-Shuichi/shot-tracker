@@ -981,10 +981,62 @@ function renderQuick(){
     q.appendChild(b);
   });
 }
+// 押しっぱなしでスムーズに増減できるようにする(短いタップは今まで通り1ずつ、
+// 一定時間押し続けると自動的に、徐々に加速しながら増減し続ける)。
+function bindStepperButton(el, onStep){
+  var HOLD_DELAY = 380;    // これ以上押し続けたら連続増減を開始
+  var START_INTERVAL = 220;
+  var MIN_INTERVAL = 45;
+  var sx, sy, moved = false, holding = false, longFired = false;
+  var holdTimer = null, repeatTimer = null;
+
+  function clearTimers(){
+    clearTimeout(holdTimer); holdTimer = null;
+    clearTimeout(repeatTimer); repeatTimer = null;
+  }
+  function beginRepeat(){
+    longFired = true;
+    var interval = START_INTERVAL;
+    (function tick(){
+      onStep();
+      interval = Math.max(MIN_INTERVAL, interval * 0.82); // 徐々に加速
+      repeatTimer = setTimeout(tick, interval);
+    })();
+  }
+  function press(){
+    holding = true; longFired = false;
+    holdTimer = setTimeout(beginRepeat, HOLD_DELAY);
+  }
+  function release(wasTap){
+    if(!holding) return;
+    holding = false;
+    clearTimers();
+    if(wasTap && !longFired) onStep(); // 長押しに発展しなかった短いタップだけ1回分を実行
+  }
+
+  el.addEventListener('touchstart', function(e){
+    moved = false;
+    var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
+    press();
+  }, { passive: true });
+  el.addEventListener('touchmove', function(e){
+    var t = e.touches[0];
+    if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10){ moved = true; release(false); }
+  }, { passive: true });
+  el.addEventListener('touchend', function(e){
+    if(!holding) return; // touchmoveで既にキャンセル済み
+    e.preventDefault(); // 実機のタップ操作ではこれでmousedown/click等の合成イベントが発生しなくなる
+    release(!moved);
+  }, { passive: false });
+  el.addEventListener('touchcancel', function(){ release(false); });
+  // PC(マウス)での動作確認用
+  el.addEventListener('mousedown', function(){ press(); });
+  el.addEventListener('mouseup', function(){ release(true); });
+  el.addEventListener('mouseleave', function(){ if(holding) release(false); });
+}
 document.querySelectorAll('.stepper button').forEach(function(b){
-  onTap(b, function(){
-    rec[b.dataset.t] += parseInt(b.dataset.d,10); syncRecUI();
-  });
+  var delta = parseInt(b.dataset.d,10);
+  bindStepperButton(b, function(){ rec[b.dataset.t] += delta; syncRecUI(); });
 });
 onTap(document.getElementById('recClose'), closeRecord);
 document.getElementById('recSheetBg').addEventListener('click', function(e){ if(e.target.id==='recSheetBg') closeRecord(); });
