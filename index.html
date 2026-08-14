@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>シュート記録</title>
+<title>シュートログ</title>
 <!-- 接続先へ事前にTLS接続しておき、スマホ回線での初回通信を速くする -->
 <link rel="preconnect" href="https://script.google.com" crossorigin>
 <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
@@ -86,7 +86,9 @@
   th:first-child,td:first-child{text-align:left;}
   th{color:var(--muted); font-weight:600; font-size:12px;}
   .barbg{background:var(--card2); border-radius:6px; height:8px; overflow:hidden;}
-  .bar{height:100%; background:var(--accent);}
+  .bar{height:100%; background:var(--accent); transition:width .35s ease, background-color .35s ease;}
+  @keyframes goalPop{0%{transform:scaleY(1)} 40%{transform:scaleY(1.8)} 100%{transform:scaleY(1)}}
+  .goal-pop{animation:goalPop .5s ease;}
   .center{text-align:center;}
   .hidden{display:none;}
   .toast{position:fixed; left:50%; bottom:84px; transform:translateX(-50%); background:#000; color:#fff; padding:10px 16px; border-radius:999px; font-size:13px; opacity:0; transition:opacity .2s; z-index:40; pointer-events:none;}
@@ -106,7 +108,7 @@
   </div>
 </div>
 <header>
-  <div class="grow"><h1 id="title">🏀 シュート記録 <span id="streakBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--accent)"></span> <span id="pendingBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--bad); border-color:var(--bad)"></span></h1><div class="who" id="who">読み込み中…</div></div>
+  <div class="grow"><h1 id="title">🏀 シュートログ <span id="streakBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--accent)"></span> <span id="pendingBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--bad); border-color:var(--bad)"></span></h1><div class="who" id="who">読み込み中…</div></div>
   <select id="ymSel" style="width:130px"></select>
 </header>
 
@@ -141,115 +143,180 @@
     </div>
   </section>
 
-  <!-- ===== マイタブ ===== -->
+  <!-- ===== じぶんタブ(旧マイ。推移もここに統合) ===== -->
   <section id="tab-my" class="hidden">
-    <div class="card">
-      <div class="row" style="gap:8px">
-        <button class="pagebtn active" id="myGranMonth">月</button>
-        <button class="pagebtn" id="myGranWeek">週</button>
-        <button class="pagebtn" id="myGranDay">日</button>
+    <div class="row" style="gap:8px; margin-top:12px">
+      <button class="pagebtn active" id="myPageStatsBtn">スタッツ</button>
+      <button class="pagebtn" id="myPageTrendBtn">推移</button>
+    </div>
+
+    <!-- ---- スタッツ サブページ ---- -->
+    <div id="myPageStats">
+      <div class="card">
+        <div class="row" style="gap:8px">
+          <button class="pagebtn active" id="myGranMonth">月</button>
+          <button class="pagebtn" id="myGranWeek">週</button>
+          <button class="pagebtn" id="myGranDay">日</button>
+        </div>
+        <input type="date" id="myPeriodDate" class="hidden" style="margin-top:8px"/>
       </div>
-      <input type="date" id="myPeriodDate" class="hidden" style="margin-top:8px"/>
+      <div class="card">
+        <div class="row"><b class="grow">週目標</b><button class="muted" id="goalEditBtn" style="font-size:12px">設定</button></div>
+        <div id="goalView" class="hidden">
+          <div class="row" style="margin-top:8px"><span class="muted" id="goalNums"></span><span class="pill" id="goalPct"></span></div>
+          <div class="barbg" style="margin-top:6px"><div class="bar" id="goalBar" style="width:0%"></div></div>
+        </div>
+        <div class="muted" id="goalEmptyHint" style="margin-top:6px">まだ週の目標本数が設定されていません</div>
+        <div class="hidden" id="goalEditForm" style="margin-top:10px">
+          <div class="row" style="gap:8px">
+            <input type="number" id="goalInput" min="0" max="9999" step="1" placeholder="週の目標本数" style="flex:1"/>
+            <button class="btn" id="goalSaveBtn" style="width:auto; padding:10px 14px">保存</button>
+          </div>
+          <label class="row" style="gap:6px; margin-top:8px; font-size:13px; cursor:pointer">
+            <input type="checkbox" id="goalPublicChk" style="width:auto"/> 仲間のライセンスに達成率を公開する
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row"><b class="grow">スタッツ</b><span class="pill" id="myTotal"></span></div>
+        <div id="myStats"></div>
+      </div>
+      <div class="card hidden" id="mySituationsCard">
+        <div class="row"><b class="grow">シチュエーション別</b></div>
+        <div id="mySituations"></div>
+      </div>
     </div>
-    <div class="card">
-      <div class="row"><b class="grow">マイスタッツ</b><span class="pill" id="myTotal"></span></div>
-      <div id="myStats"></div>
-    </div>
-    <div class="card hidden" id="mySituationsCard">
-      <div class="row"><b class="grow">シチュエーション別</b></div>
-      <div id="mySituations"></div>
+
+    <!-- ---- 推移 サブページ ---- -->
+    <div id="myPageTrend" class="hidden">
+      <!-- ライブ解放を経験していない人にはこの切替自体を見せない(隠し要素のネタバレ防止) -->
+      <div class="row hidden" style="gap:8px; margin-top:12px" id="trendPageRow">
+        <button class="pagebtn active" id="trendPageSpotBtn">スポット</button>
+        <button class="pagebtn" id="trendPageLiveBtn">🔥ライブ</button>
+      </div>
+      <div class="card">
+        <div class="row" style="gap:8px">
+          <select id="trendSpotSel" class="grow"></select>
+          <select id="trendWho" style="width:130px">
+            <option value="me">自分</option>
+          </select>
+        </div>
+        <div class="row hidden" style="gap:8px; margin-top:8px" id="trendSituationRow">
+          <select id="trendSituationSel" class="grow">
+            <option value="__live__">ライブ全体(全シチュエーション)</option>
+            <option value="HO">HO</option>
+            <option value="チェック">チェック</option>
+            <option value="ミート">ミート</option>
+            <option value="ドリブル">ドリブル</option>
+          </select>
+        </div>
+        <div class="row" style="gap:8px; margin-top:8px">
+          <button class="pagebtn" id="trendGranDay">日別</button>
+          <button class="pagebtn" id="trendGranWeek">週別</button>
+          <button class="pagebtn active" id="trendGranMonth">月別</button>
+        </div>
+        <canvas id="trendChart" height="220" style="margin-top:12px"></canvas>
+        <div id="trendTable" style="margin-top:8px"></div>
+      </div>
     </div>
   </section>
 
   <!-- ===== チームタブ ===== -->
   <section id="tab-team" class="hidden">
-    <!-- 連続シューティング日数(全員に公開・続いている人だけ表示) -->
-    <div class="card hidden" id="streakCard">
-      <b>🔥 連続シューティング中</b>
-      <div id="streakList" style="margin-top:6px"></div>
+    <div class="row" style="gap:8px; margin-top:12px">
+      <button class="pagebtn active" id="teamPageRankingBtn">ランキング</button>
+      <button class="pagebtn" id="teamPageLicenseBtn">ライセンス</button>
     </div>
-    <!-- 非ホスト: 自分の順位だけ -->
-    <div id="teamMeOnly" class="hidden">
-      <div class="card">
-        <b>シュート本数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
-        <div id="myCountRankBody"></div>
-      </div>
-      <div class="card">
-        <b>フリースロー確率ランキング</b>
-        <div class="muted" style="margin:6px 0" id="myFtHint"></div>
-        <div id="myFtRankBody"></div>
-      </div>
-      <div class="card">
-        <b>スリーポイントランキング</b>
-        <div class="muted" style="margin:6px 0">左コーナー・左ウイング・左スロット・トップ・右スロット・右ウイング・右コーナーの合計</div>
-        <div id="myTotalPctRankBody"></div>
-      </div>
-      <div class="card">
-        <div class="row"><b class="grow">確率ランキング</b><select id="teamSpotSelMe" style="width:150px"></select></div>
-        <div id="myPctRankBody" style="margin-top:8px"></div>
-      </div>
-    </div>
-    <!-- ホスト: 全員分 -->
-    <div id="teamHostView" class="hidden">
-      <div class="card">
-        <b>シュート本数ランキング</b>
-        <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
-        <div id="teamCountBody"></div>
-      </div>
-      <div class="card">
-        <b>フリースロー確率ランキング</b>
-        <div class="muted" style="margin:6px 0" id="teamFtHint"></div>
-        <div id="teamFtBody"></div>
-      </div>
-      <div class="card">
-        <b>スリーポイントランキング</b>
-        <div class="muted" style="margin:6px 0">左コーナー・左ウイング・左スロット・トップ・右スロット・右ウイング・右コーナーの合計</div>
-        <div id="teamTotalPctBody"></div>
-      </div>
-      <div class="card">
-        <div class="row"><b class="grow">確率ランキング</b></div>
-        <div class="muted" style="margin:6px 0">スポット別のランキング、または選手を選んで個人成績を見られます</div>
-        <select id="teamSpotSel"></select>
-        <select id="teamUserSel" style="margin-top:8px">
-          <option value="">▼ ランキング表示中(選手を選ぶと個人成績)</option>
-        </select>
-        <div id="teamBody" style="margin-top:10px"></div>
-        <div id="teamUserBody" style="margin-top:10px"></div>
-      </div>
-    </div>
-  </section>
 
-  <!-- ===== 推移タブ ===== -->
-  <section id="tab-trend" class="hidden">
-    <!-- ライブ解放を経験していない人にはこの切替自体を見せない(隠し要素のネタバレ防止) -->
-    <div class="row hidden" style="gap:8px; margin-top:12px" id="trendPageRow">
-      <button class="pagebtn active" id="trendPageSpotBtn">スポット</button>
-      <button class="pagebtn" id="trendPageLiveBtn">🔥ライブ</button>
+    <!-- ---- ランキング サブページ ---- -->
+    <div id="teamPageRanking">
+      <!-- 連続シューティング日数(全員に公開・続いている人だけ表示) -->
+      <div class="card hidden" id="streakCard">
+        <b>🔥 連続シューティング中</b>
+        <div id="streakList" style="margin-top:6px"></div>
+      </div>
+      <!-- 非ホスト: 自分の順位だけ -->
+      <div id="teamMeOnly" class="hidden">
+        <div class="card">
+          <b>シュート本数ランキング</b>
+          <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
+          <div id="myCountRankBody"></div>
+        </div>
+        <div class="card">
+          <b>フリースロー確率ランキング</b>
+          <div class="muted" style="margin:6px 0" id="myFtHint"></div>
+          <div id="myFtRankBody"></div>
+        </div>
+        <div class="card">
+          <b>スリーポイントランキング</b>
+          <div class="muted" style="margin:6px 0">左コーナー・左ウイング・左スロット・トップ・右スロット・右ウイング・右コーナーの合計</div>
+          <div id="myTotalPctRankBody"></div>
+        </div>
+        <div class="card">
+          <div class="row"><b class="grow">確率ランキング</b><select id="teamSpotSelMe" style="width:150px"></select></div>
+          <div id="myPctRankBody" style="margin-top:8px"></div>
+        </div>
+      </div>
+      <!-- ホスト: 全員分 -->
+      <div id="teamHostView" class="hidden">
+        <div class="card">
+          <b>シュート本数ランキング</b>
+          <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
+          <div id="teamCountBody"></div>
+        </div>
+        <div class="card">
+          <b>フリースロー確率ランキング</b>
+          <div class="muted" style="margin:6px 0" id="teamFtHint"></div>
+          <div id="teamFtBody"></div>
+        </div>
+        <div class="card">
+          <b>スリーポイントランキング</b>
+          <div class="muted" style="margin:6px 0">左コーナー・左ウイング・左スロット・トップ・右スロット・右ウイング・右コーナーの合計</div>
+          <div id="teamTotalPctBody"></div>
+        </div>
+        <div class="card">
+          <div class="row"><b class="grow">確率ランキング</b></div>
+          <div class="muted" style="margin:6px 0">スポット別のランキング、または選手を選んで個人成績を見られます</div>
+          <select id="teamSpotSel"></select>
+          <select id="teamUserSel" style="margin-top:8px">
+            <option value="">▼ ランキング表示中(選手を選ぶと個人成績)</option>
+          </select>
+          <div id="teamBody" style="margin-top:10px"></div>
+          <div id="teamUserBody" style="margin-top:10px"></div>
+        </div>
+      </div>
     </div>
-    <div class="card">
-      <div class="row" style="gap:8px">
-        <select id="trendSpotSel" class="grow"></select>
-        <select id="trendWho" style="width:130px">
-          <option value="me">自分</option>
-        </select>
+
+    <!-- ---- ライセンス サブページ ---- -->
+    <div id="teamPageLicense" class="hidden">
+      <div class="card">
+        <select id="licenseUserSel"></select>
       </div>
-      <div class="row hidden" style="gap:8px; margin-top:8px" id="trendSituationRow">
-        <select id="trendSituationSel" class="grow">
-          <option value="__live__">ライブ全体(全シチュエーション)</option>
-          <option value="HO">HO</option>
-          <option value="チェック">チェック</option>
-          <option value="ミート">ミート</option>
-          <option value="ドリブル">ドリブル</option>
-        </select>
+      <div class="card" id="licenseCard">
+        <div class="row">
+          <span class="pill" id="licenseLevelBadge">Lv</span>
+          <b class="grow" style="margin-left:8px" id="licenseName"></b>
+        </div>
+        <div class="muted" id="licenseTitle" style="margin-top:6px"></div>
+        <div class="row" style="margin-top:14px">
+          <div class="center grow">
+            <div class="muted" style="font-size:12px">🏆 トロフィー</div>
+            <div class="pct" id="licenseTrophyCount" style="font-size:22px"></div>
+          </div>
+          <div class="center grow">
+            <div class="muted" style="font-size:12px">連続中</div>
+            <div class="pct" id="licenseStreak" style="font-size:22px"></div>
+          </div>
+          <div class="center grow">
+            <div class="muted" style="font-size:12px">自己ベスト</div>
+            <div class="pct" id="licenseBestStreak" style="font-size:22px"></div>
+          </div>
+        </div>
+        <div class="hidden" id="licenseGoalRow" style="margin-top:14px">
+          <div class="row"><span class="muted" style="font-size:12px">週目標</span><span class="pill" id="licenseGoalPct"></span></div>
+          <div class="barbg" style="margin-top:6px"><div class="bar" id="licenseGoalBar" style="width:0%"></div></div>
+        </div>
       </div>
-      <div class="row" style="gap:8px; margin-top:8px">
-        <button class="pagebtn" id="trendGranDay">日別</button>
-        <button class="pagebtn" id="trendGranWeek">週別</button>
-        <button class="pagebtn active" id="trendGranMonth">月別</button>
-      </div>
-      <canvas id="trendChart" height="220" style="margin-top:12px"></canvas>
-      <div id="trendTable" style="margin-top:8px"></div>
     </div>
   </section>
 
@@ -309,10 +376,9 @@
 <!-- タブバー -->
 <nav>
   <button data-tab="record" class="active"><span class="ic">🏀</span>記録</button>
-  <button data-tab="my"><span class="ic">📊</span>マイ</button>
+  <button data-tab="my"><span class="ic">📊</span>じぶん</button>
   <button data-tab="team"><span class="ic">👥</span>チーム</button>
-  <button data-tab="trend"><span class="ic">📈</span>推移</button>
-  <button data-tab="trophy" id="navTrophyBtn" class="hidden"><span class="ic">🏆</span>実績</button>
+  <button data-tab="trophy" id="navTrophyBtn" class="hidden"><span class="ic">🏆</span>トロフィー</button>
   <button data-tab="settings"><span class="ic">⚙️</span>設定</button>
 </nav>
 
@@ -408,8 +474,11 @@ var state = {
   proxyStats: null,    // recordingAs で選んだ人の統計(ホストがコート上で確認できるように)
   recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイページ)
   addScope: 'personal', // 設定タブでスポット追加する対象
-  trendGranularity: 'month', // 推移タブの粒度: 'day' | 'week' | 'month'
-  myGranularity: 'month',    // マイタブの粒度: 'day' | 'week' | 'month'
+  trendGranularity: 'month', // 推移サブページの粒度: 'day' | 'week' | 'month'
+  myGranularity: 'month',    // スタッツサブページの粒度: 'day' | 'week' | 'month'
+  myPage: 'stats',           // じぶんタブのサブページ: 'stats' | 'trend'
+  teamPage: 'ranking',       // チームタブのサブページ: 'ranking' | 'license'
+  myGoal: { weeklyGoal: 0, public: false }, // 自分の週目標
   movingSpotId: null,        // 移動中のスポットID(nullなら移動モードではない)
   recSituation: '',          // 記録シートで選択中のシチュエーション(''=指定なし)。セッション中は維持
   saveToken: null,           // 新規記録の保存ID。リトライや保存ボタン連打でも同じIDになり二重登録を防ぐ
@@ -555,7 +624,7 @@ function removePendingOp(opId){
   savePendingOpsToStorage();
   updatePendingBadge();
 }
-// 保存直後、その場でコート/マイタブ/履歴に反映する(未送信でも見た目には即反映)。
+// 保存直後、その場でコート/じぶんタブ/履歴に反映する(未送信でも見た目には即反映)。
 // 本人の記録はマイ統計へ、ホストの代理記録は代理表示用の統計へ反映する。
 function applyOptimisticShot(payload){
   var stats = null;
@@ -661,6 +730,7 @@ function applyBootData(d, fromCache){
   updateStreakBadge(d.streak || 0);
   state.myTrophies = d.myTrophies || [];
   state.trophyTotal = d.trophyTotal || 0;
+  state.myGoal = d.myGoal || { weeklyGoal: 0, public: false };
   renderTrophyNav();
   renderCourt();
   renderEditCourt();
@@ -775,10 +845,15 @@ async function refreshAll(){
   await Promise.all([ loadMyStats(), loadHistory(), refreshProxyStats() ]);
   renderCourt();     // マイ確率をコートに反映
   var active = document.querySelector('nav button.active').dataset.tab;
-  // マイタブを週/日表示で見ている場合は、その粒度のまま表示を取り直す(月表示に戻さない)
-  if(active==='my' && state.myGranularity!=='month') loadMyTabCustomStats();
-  if(active==='team') loadTeam();
-  if(active==='trend') loadTrend();
+  if(active==='my'){
+    if(state.myPage==='trend') loadTrend();
+    // スタッツを週/日表示で見ている場合は、その粒度のまま表示を取り直す(月表示に戻さない)
+    else if(state.myGranularity!=='month') loadMyTabCustomStats();
+  }
+  if(active==='team'){
+    if(state.teamPage==='license') loadLicense();
+    else loadTeam();
+  }
   if(active==='settings') renderSpotList();
 }
 
@@ -1236,8 +1311,142 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
 // ================= マイ =================
 function applyMyStats(stats){
   detectLiveUnlocks(state.myStats, stats);
+  detectGoalAchievement(state.myStats, stats);
   state.myStats = stats;
   renderMyStatsView(stats);
+  renderGoalCard(stats);
+}
+
+// ================= じぶんタブ: サブページ切替(スタッツ/推移) =================
+onTap(document.getElementById('myPageStatsBtn'), function(){ setMyPage('stats'); });
+onTap(document.getElementById('myPageTrendBtn'), function(){ setMyPage('trend'); });
+function setMyPage(p){
+  state.myPage = p;
+  document.getElementById('myPageStatsBtn').classList.toggle('active', p==='stats');
+  document.getElementById('myPageTrendBtn').classList.toggle('active', p==='trend');
+  document.getElementById('myPageStats').classList.toggle('hidden', p!=='stats');
+  document.getElementById('myPageTrend').classList.toggle('hidden', p!=='trend');
+  if(p==='stats') refreshMyTab(); else loadTrend();
+}
+
+// ================= 週目標(本数・デフォルト非公開) =================
+function goalColorFor(pct){
+  if(pct >= 100) return '#f5c518';
+  if(pct >= 67) return 'var(--accent)';
+  if(pct >= 34) return 'var(--accent2)';
+  return '#5b6b7a';
+}
+function renderGoalCard(stats){
+  var g = state.myGoal || { weeklyGoal: 0, public: false };
+  var has = g.weeklyGoal > 0;
+  document.getElementById('goalView').classList.toggle('hidden', !has);
+  document.getElementById('goalEmptyHint').classList.toggle('hidden', has);
+  if(!has) return;
+  var week = (stats && stats.weekAttempts) || 0;
+  var pct = Math.round(week / g.weeklyGoal * 1000) / 10;
+  document.getElementById('goalNums').textContent = week + ' / ' + g.weeklyGoal + '本';
+  document.getElementById('goalPct').textContent = pct + '%';
+  var bar = document.getElementById('goalBar');
+  bar.style.width = Math.min(100, pct) + '%';
+  bar.style.background = goalColorFor(pct);
+}
+// 週の途中で目標(100%)を超えた瞬間だけ、軽く祝う(隠し要素ではないので大袈裟な演出にはしない)
+function detectGoalAchievement(prevStats, newStats){
+  if(!prevStats || !newStats || prevStats.__fromCache) return;
+  var g = state.myGoal;
+  if(!g || !(g.weeklyGoal > 0)) return;
+  var prevWeek = prevStats.weekAttempts || 0;
+  var newWeek = newStats.weekAttempts || 0;
+  if(prevWeek < g.weeklyGoal && newWeek >= g.weeklyGoal){
+    playUnlockSound();
+    toast('🎯 週目標を達成しました！');
+    var bar = document.getElementById('goalBar');
+    if(bar){ bar.classList.remove('goal-pop'); void bar.offsetWidth; bar.classList.add('goal-pop'); }
+  }
+}
+onTap(document.getElementById('goalEditBtn'), function(){
+  var form = document.getElementById('goalEditForm');
+  if(!form.classList.contains('hidden')){ form.classList.add('hidden'); return; }
+  document.getElementById('goalInput').value = state.myGoal.weeklyGoal || '';
+  document.getElementById('goalPublicChk').checked = !!state.myGoal.public;
+  form.classList.remove('hidden');
+});
+onTap(document.getElementById('goalSaveBtn'), async function(){
+  var btn = document.getElementById('goalSaveBtn');
+  var n = Math.max(0, Math.min(9999, Math.floor(Number(document.getElementById('goalInput').value) || 0)));
+  var pub = document.getElementById('goalPublicChk').checked;
+  try{
+    btn.disabled = true;
+    var res = await api('setGoal', { userId: state.user.userId, weeklyGoal: n, public: pub });
+    state.myGoal = res.goal;
+    document.getElementById('goalEditForm').classList.add('hidden');
+    renderGoalCard(state.myStats);
+    toast('週目標を保存しました ✅');
+  }catch(e){ toast('エラー: '+e.message); }
+  finally{ btn.disabled=false; }
+});
+
+// ================= チームタブ: サブページ切替(ランキング/ライセンス) =================
+onTap(document.getElementById('teamPageRankingBtn'), function(){ setTeamPage('ranking'); });
+onTap(document.getElementById('teamPageLicenseBtn'), function(){ setTeamPage('license'); });
+function setTeamPage(p){
+  state.teamPage = p;
+  document.getElementById('teamPageRankingBtn').classList.toggle('active', p==='ranking');
+  document.getElementById('teamPageLicenseBtn').classList.toggle('active', p==='license');
+  document.getElementById('teamPageRanking').classList.toggle('hidden', p!=='ranking');
+  document.getElementById('teamPageLicense').classList.toggle('hidden', p!=='license');
+  if(p==='ranking') loadTeam(); else loadLicense();
+}
+
+// ================= 仲間のライセンス =================
+// トロフィーは数だけ(内容は非公開のまま)、連続記録・称号・レベルを見せ合う
+function fillLicenseUserSelector(){
+  var sel = document.getElementById('licenseUserSel');
+  var prev = sel.value;
+  sel.innerHTML = '';
+  var meOpt = document.createElement('option'); meOpt.value = state.user.userId; meOpt.textContent = '自分('+state.user.displayName+')'; sel.appendChild(meOpt);
+  state.members.filter(function(m){ return m.userId !== state.user.userId && m.userId.indexOf('proxy-')!==0; })
+    .sort(function(a,b){ return a.name.localeCompare(b.name,'ja'); })
+    .forEach(function(m){ var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o); });
+  if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
+  else sel.value = state.user.userId;
+}
+document.getElementById('licenseUserSel').addEventListener('change', loadLicense);
+var LEVEL_META = {
+  green:  { label: 'Lv.1', color: '#2ec76b' },
+  blue:   { label: 'Lv.2', color: 'var(--accent2)' },
+  purple: { label: 'Lv.3', color: '#9b6bff' },
+  gold:   { label: 'Lv.4', color: '#f5c518' }
+};
+async function loadLicense(){
+  fillLicenseUserSelector();
+  var targetUserId = document.getElementById('licenseUserSel').value || state.user.userId;
+  var d = await api('getLicense', { userId: state.user.userId, targetUserId: targetUserId });
+  renderLicenseCard(d);
+}
+function renderLicenseCard(d){
+  document.getElementById('licenseName').textContent = d.name;
+  document.getElementById('licenseTitle').textContent = d.title || '称号はまだありません';
+  document.getElementById('licenseTrophyCount').textContent = d.trophyCount + '/' + d.trophyTotal;
+  document.getElementById('licenseStreak').textContent = d.currentStreak + '日';
+  document.getElementById('licenseBestStreak').textContent = d.bestStreak + '日';
+  var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
+  var badge = document.getElementById('licenseLevelBadge');
+  badge.textContent = meta.label;
+  badge.style.color = meta.color;
+  badge.style.borderColor = meta.color;
+  document.getElementById('licenseCard').style.borderColor = meta.color;
+  var goalRow = document.getElementById('licenseGoalRow');
+  if(d.goal && d.goal.weeklyGoal > 0){
+    goalRow.classList.remove('hidden');
+    var pct = Math.round(d.goal.weekAttempts / d.goal.weeklyGoal * 1000) / 10;
+    document.getElementById('licenseGoalPct').textContent = d.goal.weekAttempts+'/'+d.goal.weeklyGoal+'本 ('+pct+'%)';
+    var lbar = document.getElementById('licenseGoalBar');
+    lbar.style.width = Math.min(100,pct)+'%';
+    lbar.style.background = goalColorFor(pct);
+  } else {
+    goalRow.classList.add('hidden');
+  }
 }
 // ライブシューティングが「解放された瞬間」を検出して演出を出す。
 // 前回データにlive情報が無い場合(旧キャッシュや初回取得)は、誤爆防止のため演出しない
@@ -1399,7 +1608,7 @@ function renderMyStatsView(stats){
 async function loadMyStats(){
   applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
 }
-// マイタブ限定の週/日フィルタ(記録タブのコート表示や他タブには影響させない)
+// じぶんタブのスタッツサブページ限定の週/日フィルタ(記録タブのコート表示や他タブには影響させない)
 onTap(document.getElementById('myGranMonth'), function(){ setMyGranularity('month'); });
 onTap(document.getElementById('myGranWeek'), function(){ setMyGranularity('week'); });
 onTap(document.getElementById('myGranDay'), function(){ setMyGranularity('day'); });
@@ -1620,7 +1829,7 @@ function renderTeamUser(userId){
 // ================= 推移 =================
 document.getElementById('trendSpotSel').addEventListener('change', loadTrend);
 document.getElementById('trendWho').addEventListener('change', loadTrend);
-// 推移タブのページ切替(スポット/ライブ)。ライブ解放を経験した人にだけ切替ボタンを見せる
+// 推移サブページのページ切替(スポット/ライブ)。ライブ解放を経験した人にだけ切替ボタンを見せる
 state.trendPage = 'spot';
 function trendLiveAvailable(){
   var ms = state.myStats;
@@ -1888,14 +2097,13 @@ document.querySelectorAll('nav button').forEach(function(b){
     document.querySelectorAll('nav button').forEach(function(x){x.classList.remove('active');});
     b.classList.add('active');
     var tab=b.dataset.tab;
-    ['record','my','team','trend','trophy','settings'].forEach(function(t){
+    ['record','my','team','trophy','settings'].forEach(function(t){
       document.getElementById('tab-'+t).classList.toggle('hidden', t!==tab);
     });
-    if(tab==='team') loadTeam();
-    if(tab==='trend') loadTrend();
+    if(tab==='team'){ state.teamPage==='license' ? loadLicense() : loadTeam(); }
     if(tab==='trophy') renderTrophyTab();
     if(tab==='settings'){ renderEditCourt(); renderSpotList(); }
-    if(tab==='my') refreshMyTab();
+    if(tab==='my'){ state.myPage==='trend' ? loadTrend() : refreshMyTab(); }
   });
 });
 

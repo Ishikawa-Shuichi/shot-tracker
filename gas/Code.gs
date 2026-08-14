@@ -25,6 +25,7 @@ function getLineToken_() {
 // シート名
 var SHEET_SPOTS = 'Spots';
 var SHEET_SHOTS = 'Shots';
+var SHEET_GOALS = 'Goals';
 
 // 「スリーポイントランキング」「推移のスリーポイント合計」は以下7スポット(共通のみ)の合計で計算する
 var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
@@ -88,6 +89,8 @@ function doPost(e) {
       case 'getTrend':    data = actionGetTrend_(body); break;
       case 'getHistory':  data = actionGetHistory_(body); break;
       case 'getWeeklyRanking': data = actionGetWeeklyRanking_(body); break;
+      case 'setGoal':     data = actionSetGoal_(body); break;
+      case 'getLicense':  data = actionGetLicense_(body); break;
       default:
         return json_({ ok: false, error: 'unknown action: ' + action });
     }
@@ -121,9 +124,11 @@ function actionInit_(body) {
     history: computeHistory_(spots, shots, userId, 20),
     streak: computeStreak_(shots, userId),
     myTrophies: getMyTrophies_(userId),
-    trophyTotal: TROPHY_DEFS.length
+    trophyTotal: TROPHY_DEFS.length,
+    myGoal: getMyGoal_(userId),
+    // 仲間のライセンス閲覧(誰でも誰の分でも見られる)用の選択肢として、ホスト以外にも渡す
+    members: uniqueMembers_(shots)
   };
-  if (isHost) result.members = uniqueMembers_(shots);
   return result;
 }
 
@@ -225,6 +230,9 @@ function actionRecordShot_(body) {
   var id = clientId || Utilities.getUuid();
   var viewYm = String(body.viewYm || '') || null;
 
+  // ライブシューティングを「初めて」解放した瞬間を検出するため、保存前の状態を控えておく
+  var shotsBefore = getShots_();
+
   var lock = LockService.getScriptLock();
   try { lock.waitLock(15000); }
   catch (le) { throw new Error('サーバーが混み合っています。少し待ってからもう一度お試しください'); }
@@ -251,8 +259,9 @@ function actionRecordShot_(body) {
 
   var spots = getSpots_(actingUserId);
   if (!shots) shots = getShots_();
-  // トロフィーは記録の持ち主(代理記録なら対象メンバー)に対して判定する。重複保存の再送時は判定しない
+  // トロフィー・ライブ解放通知は記録の持ち主(代理記録なら対象メンバー)に対して判定する。重複保存の再送時は判定しない
   var newTrophies = dupRow ? [] : evaluateTrophies_(userId, displayName, shots);
+  if (!dupRow) notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shots, spots);
   return {
     id: id, ym: dupRow ? dupRow.ym : ym, duplicate: dupRow ? true : undefined,
     myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
@@ -611,11 +620,147 @@ function evaluateTrophies_(userId, displayName, shots) {
       Object.keys(memberMap).forEach(function (uid) {
         if (uid === userId) return;
         if (uid.indexOf('proxy-') === 0) return; // 代理記録用の仮メンバーはLINEに存在しない
-        pushLineMessageTo_(uid, '🏆 今、' + displayName + 'さんが新しいトロフィーを解放しました！');
+        pushLineMessageTo_(uid, '🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！');
       });
     } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
   }
   return newOnes;
+}
+
+// ===== 週目標(個人・本数) ==========================================
+// 確率ではなく本数を目標にする(確率目標は虚偽申告を誘発しやすいため)。
+// デフォルト非公開。公開に切り替えた人だけ、仲間のライセンス画面にも達成率が表示される。
+
+function getMyGoal_(userId) {
+  var rows = getSheet_(SHEET_GOALS).getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === userId) {
+      return { weeklyGoal: Number(rows[i][1]) || 0, public: rows[i][2] === true || rows[i][2] === 'TRUE' };
+    }
+  }
+  return { weeklyGoal: 0, public: false };
+}
+
+function actionSetGoal_(body) {
+  var userId = String(body.userId || '');
+  if (!userId) throw new Error('userId が空です');
+  var weeklyGoal = Math.max(0, Math.min(9999, Math.floor(Number(body.weeklyGoal) || 0)));
+  var isPublic = !!body.public;
+  var sh = getSheet_(SHEET_GOALS);
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === userId) {
+      sh.getRange(i + 1, 2).setValue(weeklyGoal);
+      sh.getRange(i + 1, 3).setValue(isPublic);
+      sh.getRange(i + 1, 4).setValue(new Date().toISOString());
+      return { goal: { weeklyGoal: weeklyGoal, public: isPublic } };
+    }
+  }
+  sh.appendRow([userId, weeklyGoal, isPublic, new Date().toISOString()]);
+  return { goal: { weeklyGoal: weeklyGoal, public: isPublic } };
+}
+
+// 今週(月曜〜今日)の本数。指定なし/ライブ問わず、打った本数はすべて対象(本数系は常に全記録を数える方針)
+function weekAttemptsOf_(shots, userId) {
+  var today = dateOf_(new Date());
+  var monday = weekKeyOf_(today);
+  var total = 0;
+  shots.forEach(function (s) { if (s.userId === userId && s.date >= monday && s.date <= today) total += s.attempts; });
+  return total;
+}
+
+// ===== 仲間のライセンス ============================================
+// 誰でも誰の分でも閲覧できる(BeReal的に連続記録を見せ合う延長)。
+// トロフィーは内容ではなく「数」だけ、称号・連続記録・累計本数によるレベルを表示する。
+
+var LICENSE_LEVELS = [
+  { tier: 'green',  min: 0 },
+  { tier: 'blue',   min: 5000 },
+  { tier: 'purple', min: 20000 },
+  { tier: 'gold',   min: 50000 }
+];
+function computeLicenseLevel_(totalAttempts) {
+  var cur = LICENSE_LEVELS[0], next = null;
+  for (var i = 0; i < LICENSE_LEVELS.length; i++) {
+    if (totalAttempts >= LICENSE_LEVELS[i].min) cur = LICENSE_LEVELS[i];
+    else if (next === null) next = LICENSE_LEVELS[i];
+  }
+  return { tier: cur.tier, next: next ? next.min : null };
+}
+
+function totalCareerAttempts_(shots, userId) {
+  var total = 0;
+  shots.forEach(function (s) { if (s.userId === userId) total += s.attempts; });
+  return total;
+}
+
+// 連続記録の自己ベスト(現在進行形ではなく、過去の全期間で一番長かった連続日数)
+function computeBestStreak_(shots, userId) {
+  var daySet = {};
+  shots.forEach(function (s) { if (s.userId === userId) daySet[s.date] = true; });
+  var days = Object.keys(daySet).sort();
+  var best = 0, cur = 0, prevDate = null;
+  days.forEach(function (d) {
+    if (prevDate) {
+      var expected = new Date(prevDate + 'T00:00:00'); expected.setDate(expected.getDate() + 1);
+      cur = (dateOf_(expected) === d) ? cur + 1 : 1;
+    } else { cur = 1; }
+    if (cur > best) best = cur;
+    prevDate = d;
+  });
+  return best;
+}
+
+// 称号: 100本以上・70%以上を達成したスポットがあれば「(スポット名)のスペシャリスト」。
+// 確率系と同じくスポットシューティング(指定なし)のみで判定する。複数該当時は確率が一番高いものを採用
+function computeTitle_(spots, shots, userId) {
+  var bySpot = {};
+  shots.forEach(function (s) {
+    if (s.userId !== userId || s.situation) return;
+    var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
+  });
+  var spotName = {}; spots.forEach(function (sp) { spotName[sp.id] = sp.name; });
+  var best = null;
+  Object.keys(bySpot).forEach(function (spotId) {
+    var b = bySpot[spotId];
+    if (b.attempts < 100) return;
+    var p = pct_(b.makes, b.attempts);
+    if (p < 70) return;
+    if (!best || p > best.pct) best = { name: spotName[spotId] || '?', pct: p };
+  });
+  return best ? (best.name + 'のスペシャリスト') : null;
+}
+
+function actionGetLicense_(body) {
+  var requesterId = String(body.userId || '');
+  if (!requesterId) throw new Error('userId が空です');
+  var targetUserId = String(body.targetUserId || '') || requesterId;
+
+  var shots = getShots_();
+  var spots = getSpots_(targetUserId, targetUserId === HOST_USER_ID);
+  var memberMap = {};
+  getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+  uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
+  var name = memberMap[targetUserId] || (targetUserId === requesterId ? '自分' : '?');
+
+  var trophies = getMyTrophies_(targetUserId);
+  var total = totalCareerAttempts_(shots, targetUserId);
+  var goal = getMyGoal_(targetUserId);
+  var result = {
+    userId: targetUserId, name: name,
+    trophyCount: trophies.length, trophyTotal: TROPHY_DEFS.length,
+    title: computeTitle_(spots, shots, targetUserId),
+    currentStreak: computeStreak_(shots, targetUserId),
+    bestStreak: computeBestStreak_(shots, targetUserId),
+    level: computeLicenseLevel_(total),
+    totalAttempts: total
+  };
+  // 自分自身は常に見える。他人は公開設定のときだけ達成率を含める
+  if (targetUserId === requesterId || goal.public) {
+    result.goal = { weeklyGoal: goal.weeklyGoal, weekAttempts: weekAttemptsOf_(shots, targetUserId), public: goal.public };
+  }
+  return result;
 }
 
 // ===== 集計ロジック(使い回し用) ==================================
@@ -685,6 +830,33 @@ function computeLiveStatus_(shots, userId) {
   return out;
 }
 
+// そのスポットのライブシューティングを「そのユーザーが生まれて初めて」解放した瞬間に、
+// ホスト以外の全員へ通知する(スポット名は伏せない。トロフィーと違い、これは早いもの勝ちの要素ではないため)。
+// ホスト自身の解放は検証や代理記録の動作確認で頻発しがちなためノイズになるので通知しない。
+function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spots) {
+  if (userId === HOST_USER_ID) return;
+  try {
+    var before = computeLiveStatus_(shotsBefore, userId);
+    var after = computeLiveStatus_(shotsAfter, userId);
+    var spotName = {}; spots.forEach(function (sp) { spotName[sp.id] = sp.name; });
+    var newSpotNames = [];
+    Object.keys(after).forEach(function (spotId) {
+      var wasEver = !!(before[spotId] && before[spotId].ever);
+      if (after[spotId].ever && !wasEver) newSpotNames.push(spotName[spotId] || '?');
+    });
+    if (!newSpotNames.length) return;
+    var memberMap = {};
+    getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+    uniqueMembers_(shotsAfter).forEach(function (m) { memberMap[m.userId] = m.name; });
+    var text = '🔥 ' + displayName + 'さんが「' + newSpotNames.join('・') + '」のライブシューティングを解放しました！';
+    Object.keys(memberMap).forEach(function (uid) {
+      if (uid === userId) return; // 解放した本人には送らない(ホストは通常の受信者として扱う)
+      if (uid.indexOf('proxy-') === 0) return; // 代理記録用の仮メンバーはLINEに存在しない
+      pushLineMessageTo_(uid, text);
+    });
+  } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
+}
+
 function computeMyStats_(spots, shots, userId, granularity, period) {
   // granularity: 'month'(既定) | 'week' | 'day'。period が空/nullなら全期間。
   // week指定時は period(任意の日付)が属する週の月曜日キーに正規化して比較する。
@@ -729,7 +901,11 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
       var v = bySituation[k];
       return { key: k, name: k || '指定なし', makes: v.makes, attempts: v.attempts, pct: pct_(v.makes, v.attempts) };
     });
-  return { granularity: granularity, period: period, spots: stats, situations: situations, hasLiveRecords: hasLive, total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) } };
+  return {
+    granularity: granularity, period: period, spots: stats, situations: situations, hasLiveRecords: hasLive,
+    weekAttempts: weekAttemptsOf_(shots, userId), // 週目標メーター用。期間フィルタに関係なく常に「今週」の実数
+    total: { makes: tot.makes, attempts: tot.attempts, pct: pct_(tot.makes, tot.attempts) }
+  };
 }
 
 function computeHistory_(spots, shots, userId, limit) {
@@ -956,6 +1132,8 @@ function getSheet_(name) {
       sh.appendRow(['userId', 'displayName', 'firstSeenAt']);
     } else if (name === SHEET_TROPHIES) {
       sh.appendRow(['userId', 'trophyId', 'earnedAt', 'displayName']);
+    } else if (name === SHEET_GOALS) {
+      sh.appendRow(['userId', 'weeklyGoal', 'public', 'updatedAt']);
     }
   }
   return sh;
