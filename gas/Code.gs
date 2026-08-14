@@ -711,8 +711,13 @@ function computeBestStreak_(shots, userId) {
   return best;
 }
 
-// 称号: 100本以上・70%以上を達成したスポットがあれば「(スポット名)のスペシャリスト」。
-// 確率系と同じくスポットシューティング(指定なし)のみで判定する。複数該当時は確率が一番高いものを採用
+// 称号: 100本以上・スポットごとのしきい値以上を達成したスポットがあれば「(スポット名)のスペシャリスト」。
+// フリースローは90%、スリーポイント(7スポット)は70%、それ以外は70%を基準にする。
+// 確率系と同じくスポットシューティング(指定なし)のみで判定する。複数該当時は基準に対する余裕度が一番高いものを採用
+function titleThresholdFor_(spotName) {
+  if (spotName === 'フリースロー') return 90;
+  return 70; // スリーポイント7スポット・その他共通
+}
 function computeTitle_(spots, shots, userId) {
   var bySpot = {};
   shots.forEach(function (s) {
@@ -725,9 +730,12 @@ function computeTitle_(spots, shots, userId) {
   Object.keys(bySpot).forEach(function (spotId) {
     var b = bySpot[spotId];
     if (b.attempts < 100) return;
+    var name = spotName[spotId] || '?';
+    var need = titleThresholdFor_(name);
     var p = pct_(b.makes, b.attempts);
-    if (p < 70) return;
-    if (!best || p > best.pct) best = { name: spotName[spotId] || '?', pct: p };
+    if (p < need) return;
+    var margin = p - need; // しきい値に対する余裕度が一番大きいものを採用
+    if (!best || margin > best.margin) best = { name: name, pct: p, margin: margin };
   });
   return best ? (best.name + 'のスペシャリスト') : null;
 }

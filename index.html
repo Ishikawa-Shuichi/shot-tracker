@@ -299,7 +299,7 @@
         </div>
         <div class="muted" id="licenseTitle" style="margin-top:6px"></div>
         <div class="row" style="margin-top:14px">
-          <div class="center grow">
+          <div class="center grow hidden" id="licenseTrophyBlock">
             <div class="muted" style="font-size:12px">🏆 トロフィー</div>
             <div class="pct" id="licenseTrophyCount" style="font-size:22px"></div>
           </div>
@@ -1427,6 +1427,10 @@ async function loadLicense(){
 function renderLicenseCard(d){
   document.getElementById('licenseName').textContent = d.name;
   document.getElementById('licenseTitle').textContent = d.title || '称号はまだありません';
+  // トロフィーは「閲覧者自身」が一度も発見していなければ、他人の分も含めて存在自体を見せない
+  // (誰かのライセンスを覗いただけで隠し要素の存在を知れてしまうと、発見の驚きが台無しになるため)
+  var viewerHasFoundTrophies = !!(state.myTrophies && state.myTrophies.length);
+  document.getElementById('licenseTrophyBlock').classList.toggle('hidden', !viewerHasFoundTrophies);
   document.getElementById('licenseTrophyCount').textContent = d.trophyCount + '/' + d.trophyTotal;
   document.getElementById('licenseStreak').textContent = d.currentStreak + '日';
   document.getElementById('licenseBestStreak').textContent = d.bestStreak + '日';
