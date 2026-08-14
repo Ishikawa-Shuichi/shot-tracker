@@ -1403,8 +1403,8 @@ function renderLicenseList(list){
       + '<span class="pill" style="color:'+meta.color+'; border-color:'+meta.color+'">'+meta.label+'</span>'
       + '<b class="grow" style="margin-left:8px">'+esc(d.name)+(d.userId===state.user.userId?'(自分)':'')+'</b>'
       + '</div>'
-      + '<div class="muted" style="margin-top:6px">'+(d.title ? esc(d.title) : '称号はまだありません')+'</div>'
-      + '<div class="muted" style="margin-top:2px; font-size:12px">'+levelLine+'</div>'
+      + (d.title ? '<div class="muted" style="margin-top:6px">'+esc(d.title)+'</div>' : '')
+      + '<div class="muted" style="margin-top:6px; font-size:12px">'+levelLine+'</div>'
       + '<div class="row" style="margin-top:14px">';
     if(viewerHasFoundTrophies){
       html += '<div class="center grow"><div class="muted" style="font-size:12px">🏆 トロフィー</div><div class="pct" style="font-size:22px">'+d.trophyCount+'/'+d.trophyTotal+'</div></div>';
