@@ -1393,7 +1393,7 @@ function renderLicenseList(list){
   list.forEach(function(d){
     var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
     var next = d.level && d.level.next;
-    var levelLine = '累計 '+d.totalAttempts+'本'+(next!=null ? '(次のレベルまであと'+(next-d.totalAttempts)+'本)' : '(最高レベル)');
+    var levelLine = '累計 '+d.totalAttempts+'本・'+d.totalDays+'日'+(next!=null ? '(次のレベルまであと'+(next-d.totalAttempts)+'本)' : '(最高レベル)');
 
     var card = document.createElement('div');
     card.className = 'card';

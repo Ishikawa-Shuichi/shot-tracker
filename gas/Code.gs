@@ -693,6 +693,12 @@ function totalCareerAttempts_(shots, userId) {
   shots.forEach(function (s) { if (s.userId === userId) total += s.attempts; });
   return total;
 }
+// 連続でなくても構わない、記録した日の延べ日数(通算プレー日数)
+function totalPracticeDays_(shots, userId) {
+  var days = {};
+  shots.forEach(function (s) { if (s.userId === userId) days[s.date] = true; });
+  return Object.keys(days).length;
+}
 
 // 連続記録の自己ベスト(現在進行形ではなく、過去の全期間で一番長かった連続日数)
 function computeBestStreak_(shots, userId) {
@@ -765,7 +771,8 @@ function actionGetAllLicenses_(body) {
       currentStreak: computeStreak_(shots, uid),
       bestStreak: computeBestStreak_(shots, uid),
       level: computeLicenseLevel_(total),
-      totalAttempts: total
+      totalAttempts: total,
+      totalDays: totalPracticeDays_(shots, uid)
     };
     // 自分自身は常に見える。他人は公開設定のときだけ達成率を含める
     if (uid === requesterId || goal.public) {
