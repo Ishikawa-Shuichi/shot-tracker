@@ -741,7 +741,7 @@ function computeTitle_(spots, shots, userId) {
 }
 
 // チーム全員分のライセンスを1回でまとめて返す(縦一列スクロールでの一覧表示用)。
-// 自分を先頭に、あとは現在の連続記録が長い順(頑張っている人が見つけやすいように)。
+// 現在の連続記録が長い順(自分も含めてフラットに並べる。同数なら累計本数が多い順)。
 function actionGetAllLicenses_(body) {
   var requesterId = String(body.userId || '');
   if (!requesterId) throw new Error('userId が空です');
@@ -774,9 +774,8 @@ function actionGetAllLicenses_(body) {
     return item;
   });
   list.sort(function (a, b) {
-    if (a.userId === requesterId) return -1;
-    if (b.userId === requesterId) return 1;
-    return b.currentStreak - a.currentStreak;
+    if (b.currentStreak !== a.currentStreak) return b.currentStreak - a.currentStreak;
+    return b.totalAttempts - a.totalAttempts; // 同数タイブレーク
   });
   return { licenses: list };
 }
