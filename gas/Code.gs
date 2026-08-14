@@ -90,7 +90,7 @@ function doPost(e) {
       case 'getHistory':  data = actionGetHistory_(body); break;
       case 'getWeeklyRanking': data = actionGetWeeklyRanking_(body); break;
       case 'setGoal':     data = actionSetGoal_(body); break;
-      case 'getLicense':  data = actionGetLicense_(body); break;
+      case 'getAllLicenses': data = actionGetAllLicenses_(body); break;
       default:
         return json_({ ok: false, error: 'unknown action: ' + action });
     }
@@ -740,35 +740,45 @@ function computeTitle_(spots, shots, userId) {
   return best ? (best.name + 'のスペシャリスト') : null;
 }
 
-function actionGetLicense_(body) {
+// チーム全員分のライセンスを1回でまとめて返す(縦一列スクロールでの一覧表示用)。
+// 自分を先頭に、あとは現在の連続記録が長い順(頑張っている人が見つけやすいように)。
+function actionGetAllLicenses_(body) {
   var requesterId = String(body.userId || '');
   if (!requesterId) throw new Error('userId が空です');
-  var targetUserId = String(body.targetUserId || '') || requesterId;
 
   var shots = getShots_();
-  var spots = getSpots_(targetUserId, targetUserId === HOST_USER_ID);
+  var spots = getSpots_(null, true); // 称号判定用に全員分のスポット名が要るため、共通+全員の個人スポット
   var memberMap = {};
   getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
   uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
-  var name = memberMap[targetUserId] || (targetUserId === requesterId ? '自分' : '?');
+  if (!memberMap[requesterId]) memberMap[requesterId] = '自分';
 
-  var trophies = getMyTrophies_(targetUserId);
-  var total = totalCareerAttempts_(shots, targetUserId);
-  var goal = getMyGoal_(targetUserId);
-  var result = {
-    userId: targetUserId, name: name,
-    trophyCount: trophies.length, trophyTotal: TROPHY_DEFS.length,
-    title: computeTitle_(spots, shots, targetUserId),
-    currentStreak: computeStreak_(shots, targetUserId),
-    bestStreak: computeBestStreak_(shots, targetUserId),
-    level: computeLicenseLevel_(total),
-    totalAttempts: total
-  };
-  // 自分自身は常に見える。他人は公開設定のときだけ達成率を含める
-  if (targetUserId === requesterId || goal.public) {
-    result.goal = { weeklyGoal: goal.weeklyGoal, weekAttempts: weekAttemptsOf_(shots, targetUserId), public: goal.public };
-  }
-  return result;
+  var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0; });
+  var list = ids.map(function (uid) {
+    var trophies = getMyTrophies_(uid);
+    var total = totalCareerAttempts_(shots, uid);
+    var goal = getMyGoal_(uid);
+    var item = {
+      userId: uid, name: memberMap[uid],
+      trophyCount: trophies.length, trophyTotal: TROPHY_DEFS.length,
+      title: computeTitle_(spots, shots, uid),
+      currentStreak: computeStreak_(shots, uid),
+      bestStreak: computeBestStreak_(shots, uid),
+      level: computeLicenseLevel_(total),
+      totalAttempts: total
+    };
+    // 自分自身は常に見える。他人は公開設定のときだけ達成率を含める
+    if (uid === requesterId || goal.public) {
+      item.goal = { weeklyGoal: goal.weeklyGoal, weekAttempts: weekAttemptsOf_(shots, uid), public: goal.public };
+    }
+    return item;
+  });
+  list.sort(function (a, b) {
+    if (a.userId === requesterId) return -1;
+    if (b.userId === requesterId) return 1;
+    return b.currentStreak - a.currentStreak;
+  });
+  return { licenses: list };
 }
 
 // ===== 集計ロジック(使い回し用) ==================================

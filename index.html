@@ -287,36 +287,9 @@
       </div>
     </div>
 
-    <!-- ---- ライセンス サブページ ---- -->
+    <!-- ---- ライセンス サブページ(縦一列でスクロールして全員分を見られる) ---- -->
     <div id="teamPageLicense" class="hidden">
-      <div class="card">
-        <select id="licenseUserSel"></select>
-      </div>
-      <div class="card" id="licenseCard">
-        <div class="row">
-          <span class="pill" id="licenseLevelBadge">Lv</span>
-          <b class="grow" style="margin-left:8px" id="licenseName"></b>
-        </div>
-        <div class="muted" id="licenseTitle" style="margin-top:6px"></div>
-        <div class="row" style="margin-top:14px">
-          <div class="center grow hidden" id="licenseTrophyBlock">
-            <div class="muted" style="font-size:12px">🏆 トロフィー</div>
-            <div class="pct" id="licenseTrophyCount" style="font-size:22px"></div>
-          </div>
-          <div class="center grow">
-            <div class="muted" style="font-size:12px">連続中</div>
-            <div class="pct" id="licenseStreak" style="font-size:22px"></div>
-          </div>
-          <div class="center grow">
-            <div class="muted" style="font-size:12px">自己ベスト</div>
-            <div class="pct" id="licenseBestStreak" style="font-size:22px"></div>
-          </div>
-        </div>
-        <div class="hidden" id="licenseGoalRow" style="margin-top:14px">
-          <div class="row"><span class="muted" style="font-size:12px">週目標</span><span class="pill" id="licenseGoalPct"></span></div>
-          <div class="barbg" style="margin-top:6px"><div class="bar" id="licenseGoalBar" style="width:0%"></div></div>
-        </div>
-      </div>
+      <div id="licenseList"></div>
     </div>
   </section>
 
@@ -1399,19 +1372,8 @@ function setTeamPage(p){
 }
 
 // ================= 仲間のライセンス =================
-// トロフィーは数だけ(内容は非公開のまま)、連続記録・称号・レベルを見せ合う
-function fillLicenseUserSelector(){
-  var sel = document.getElementById('licenseUserSel');
-  var prev = sel.value;
-  sel.innerHTML = '';
-  var meOpt = document.createElement('option'); meOpt.value = state.user.userId; meOpt.textContent = '自分('+state.user.displayName+')'; sel.appendChild(meOpt);
-  state.members.filter(function(m){ return m.userId !== state.user.userId && m.userId.indexOf('proxy-')!==0; })
-    .sort(function(a,b){ return a.name.localeCompare(b.name,'ja'); })
-    .forEach(function(m){ var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o); });
-  if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
-  else sel.value = state.user.userId;
-}
-document.getElementById('licenseUserSel').addEventListener('change', loadLicense);
+// トロフィーは数だけ(内容は非公開のまま)、連続記録・称号・レベルを見せ合う。
+// 縦一列に並べてスクロールで全員分を見られるようにする(1人ずつ選ぶ方式はやめた)。
 var LEVEL_META = {
   green:  { label: 'Lv.1', color: '#2ec76b' },
   blue:   { label: 'Lv.2', color: 'var(--accent2)' },
@@ -1419,38 +1381,46 @@ var LEVEL_META = {
   gold:   { label: 'Lv.4', color: '#f5c518' }
 };
 async function loadLicense(){
-  fillLicenseUserSelector();
-  var targetUserId = document.getElementById('licenseUserSel').value || state.user.userId;
-  var d = await api('getLicense', { userId: state.user.userId, targetUserId: targetUserId });
-  renderLicenseCard(d);
+  var d = await api('getAllLicenses', { userId: state.user.userId });
+  renderLicenseList(d.licenses);
 }
-function renderLicenseCard(d){
-  document.getElementById('licenseName').textContent = d.name;
-  document.getElementById('licenseTitle').textContent = d.title || '称号はまだありません';
+function renderLicenseList(list){
+  var host = document.getElementById('licenseList');
+  host.innerHTML = '';
   // トロフィーは「閲覧者自身」が一度も発見していなければ、他人の分も含めて存在自体を見せない
   // (誰かのライセンスを覗いただけで隠し要素の存在を知れてしまうと、発見の驚きが台無しになるため)
   var viewerHasFoundTrophies = !!(state.myTrophies && state.myTrophies.length);
-  document.getElementById('licenseTrophyBlock').classList.toggle('hidden', !viewerHasFoundTrophies);
-  document.getElementById('licenseTrophyCount').textContent = d.trophyCount + '/' + d.trophyTotal;
-  document.getElementById('licenseStreak').textContent = d.currentStreak + '日';
-  document.getElementById('licenseBestStreak').textContent = d.bestStreak + '日';
-  var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
-  var badge = document.getElementById('licenseLevelBadge');
-  badge.textContent = meta.label;
-  badge.style.color = meta.color;
-  badge.style.borderColor = meta.color;
-  document.getElementById('licenseCard').style.borderColor = meta.color;
-  var goalRow = document.getElementById('licenseGoalRow');
-  if(d.goal && d.goal.weeklyGoal > 0){
-    goalRow.classList.remove('hidden');
-    var pct = Math.round(d.goal.weekAttempts / d.goal.weeklyGoal * 1000) / 10;
-    document.getElementById('licenseGoalPct').textContent = d.goal.weekAttempts+'/'+d.goal.weeklyGoal+'本 ('+pct+'%)';
-    var lbar = document.getElementById('licenseGoalBar');
-    lbar.style.width = Math.min(100,pct)+'%';
-    lbar.style.background = goalColorFor(pct);
-  } else {
-    goalRow.classList.add('hidden');
-  }
+  list.forEach(function(d){
+    var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
+    var next = d.level && d.level.next;
+    var levelLine = '累計 '+d.totalAttempts+'本'+(next!=null ? '(次のレベルまであと'+(next-d.totalAttempts)+'本)' : '(最高レベル)');
+
+    var card = document.createElement('div');
+    card.className = 'card';
+    card.style.borderColor = meta.color;
+
+    var html = '<div class="row">'
+      + '<span class="pill" style="color:'+meta.color+'; border-color:'+meta.color+'">'+meta.label+'</span>'
+      + '<b class="grow" style="margin-left:8px">'+esc(d.name)+(d.userId===state.user.userId?'(自分)':'')+'</b>'
+      + '</div>'
+      + '<div class="muted" style="margin-top:6px">'+(d.title ? esc(d.title) : '称号はまだありません')+'</div>'
+      + '<div class="muted" style="margin-top:2px; font-size:12px">'+levelLine+'</div>'
+      + '<div class="row" style="margin-top:14px">';
+    if(viewerHasFoundTrophies){
+      html += '<div class="center grow"><div class="muted" style="font-size:12px">🏆 トロフィー</div><div class="pct" style="font-size:22px">'+d.trophyCount+'/'+d.trophyTotal+'</div></div>';
+    }
+    html += '<div class="center grow"><div class="muted" style="font-size:12px">連続中</div><div class="pct" style="font-size:22px">'+d.currentStreak+'日</div></div>'
+      + '<div class="center grow"><div class="muted" style="font-size:12px">自己ベスト</div><div class="pct" style="font-size:22px">'+d.bestStreak+'日</div></div>'
+      + '</div>';
+    if(d.goal && d.goal.weeklyGoal > 0){
+      var pct = Math.round(d.goal.weekAttempts / d.goal.weeklyGoal * 1000) / 10;
+      html += '<div style="margin-top:14px"><div class="row"><span class="muted" style="font-size:12px">週目標</span>'
+        + '<span class="pill">'+d.goal.weekAttempts+'/'+d.goal.weeklyGoal+'本 ('+pct+'%)</span></div>'
+        + '<div class="barbg" style="margin-top:6px"><div class="bar" style="width:'+Math.min(100,pct)+'%; background:'+goalColorFor(pct)+'"></div></div></div>';
+    }
+    card.innerHTML = html;
+    host.appendChild(card);
+  });
 }
 // ライブシューティングが「解放された瞬間」を検出して演出を出す。
 // 前回データにlive情報が無い場合(旧キャッシュや初回取得)は、誤爆防止のため演出しない
