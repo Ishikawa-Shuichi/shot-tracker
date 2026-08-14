@@ -75,6 +75,11 @@
   /* 鍵が外れて飛び出すようなポップ演出 */
   @keyframes unlockPop{0%{transform:scale(.2) rotate(-20deg); opacity:0} 55%{transform:scale(1.35) rotate(8deg)} 100%{transform:scale(1) rotate(0deg); opacity:1}}
   .unlock-pop{animation:unlockPop .9s cubic-bezier(.2,1.5,.4,1) both;}
+  /* 解放演出の「溜め」: 本体を出す前に一瞬だけ光る点で予感させる */
+  .tame-dot{width:14px; height:14px; border-radius:50%; background:var(--accent); margin:14px auto; animation:tameDot .55s ease-in-out infinite;}
+  @keyframes tameDot{0%,100%{transform:scale(.55); opacity:.35} 50%{transform:scale(1.25); opacity:1}}
+  @keyframes revealFade{from{opacity:0; transform:scale(.94)} to{opacity:1; transform:scale(1)}}
+  .reveal-fade{animation:revealFade .3s ease both;}
 
   table{width:100%; border-collapse:collapse; font-size:13px;}
   th,td{padding:7px 6px; border-bottom:1px solid var(--line); text-align:right;}
@@ -354,22 +359,28 @@
 
 <!-- トロフィー解放の演出(記録直後に全画面で目立たせ、タップするまで閉じない) -->
 <div class="sheet-bg" id="trophyBg" style="align-items:center; justify-content:center; z-index:61;">
-  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:#f5c518">
-    <div id="trophyEmoji" style="font-size:60px">🏆</div>
-    <b style="display:block; margin-top:10px; font-size:19px">トロフィー解放！</b>
-    <div id="trophyDesc" style="margin-top:10px; line-height:1.9; font-size:14px"></div>
-    <div class="muted" style="margin-top:8px; font-size:12px">実績タブに追加されました</div>
-    <button class="btn" id="trophyCloseBtn" style="margin-top:20px">やったね 🎉</button>
+  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:#f5c518; min-width:180px">
+    <div id="trophyTame" class="tame-dot hidden"></div>
+    <div id="trophyContent">
+      <div id="trophyEmoji" style="font-size:60px">🏆</div>
+      <b style="display:block; margin-top:10px; font-size:19px">トロフィー解放！</b>
+      <div id="trophyDesc" style="margin-top:10px; line-height:1.9; font-size:14px"></div>
+      <div class="muted" style="margin-top:8px; font-size:12px">実績タブに追加されました</div>
+      <button class="btn" id="trophyCloseBtn" style="margin-top:20px">やったね 🎉</button>
+    </div>
   </div>
 </div>
 
 <!-- ライブシューティング解放の演出(記録直後に全画面で目立たせ、タップするまで閉じない) -->
 <div class="sheet-bg" id="unlockBg" style="align-items:center; justify-content:center; z-index:60;">
-  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:var(--accent)">
-    <div id="unlockEmoji" style="font-size:60px">🔓</div>
-    <b id="unlockTitle" style="display:block; margin-top:10px; font-size:19px">ライブシューティング解放！</b>
-    <div class="muted" id="unlockDesc" style="margin-top:10px; line-height:1.7; font-size:13px"></div>
-    <button class="btn" id="unlockCloseBtn" style="margin-top:20px">ライブシューティングを打つ 🔥</button>
+  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:var(--accent); min-width:180px">
+    <div id="unlockTame" class="tame-dot hidden"></div>
+    <div id="unlockContent">
+      <div id="unlockEmoji" style="font-size:60px">🔓</div>
+      <b id="unlockTitle" style="display:block; margin-top:10px; font-size:19px">ライブシューティング解放！</b>
+      <div class="muted" id="unlockDesc" style="margin-top:10px; line-height:1.7; font-size:13px"></div>
+      <button class="btn" id="unlockCloseBtn" style="margin-top:20px">ライブシューティングを打つ 🔥</button>
+    </div>
   </div>
 </div>
 
@@ -1302,13 +1313,34 @@ function renderTrophyTab(){
   }
   document.getElementById('trophyCount').textContent = mine.length + ' / ' + (state.trophyTotal||0);
 }
+// 解放演出の「溜め」: 内容を確定させておき、先に背景と小さな光る点だけ見せて一呼吸置く。
+// その「間」の後に、音・ポップ演出・本文を一斉に出すことで、パッと出た瞬間の気持ちよさを強める
+// (桜井政博氏がスマブラの必殺技等で重視している「タメ→インパクト」の考え方を踏襲)
+var TAME_MS = 420;
+function runTameReveal(bgId, tameId, contentId, emojiId, applyContent){
+  var bg = document.getElementById(bgId);
+  var tame = document.getElementById(tameId);
+  var content = document.getElementById(contentId);
+  applyContent();
+  content.classList.add('hidden');
+  content.classList.remove('reveal-fade');
+  tame.classList.remove('hidden');
+  bg.classList.add('open');
+  setTimeout(function(){
+    tame.classList.add('hidden');
+    content.classList.remove('hidden');
+    content.classList.add('reveal-fade');
+    playUnlockSound();
+    var em = document.getElementById(emojiId);
+    em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
+  }, TAME_MS);
+}
+
 function showTrophyUnlock(trophies, ownerName){
-  playUnlockSound();
   var lines = trophies.map(function(t){ return (TIER_EMOJI[t.tier]||'🏆')+' <b>'+esc(t.name)+'</b>'; }).join('<br>');
-  document.getElementById('trophyDesc').innerHTML = (ownerName ? esc(ownerName)+'さんが解放！<br>' : '') + lines;
-  var em = document.getElementById('trophyEmoji');
-  em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
-  document.getElementById('trophyBg').classList.add('open');
+  runTameReveal('trophyBg', 'trophyTame', 'trophyContent', 'trophyEmoji', function(){
+    document.getElementById('trophyDesc').innerHTML = (ownerName ? esc(ownerName)+'さんが解放！<br>' : '') + lines;
+  });
 }
 onTap(document.getElementById('trophyCloseBtn'), function(){
   document.getElementById('trophyBg').classList.remove('open');
@@ -1316,13 +1348,12 @@ onTap(document.getElementById('trophyCloseBtn'), function(){
 });
 
 function showLiveUnlock(spotStat, firstEver){
-  playUnlockSound();
-  document.getElementById('unlockDesc').innerHTML = firstEver
+  var desc = firstEver
     ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>コートの下にシチュエーションボタン(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は週ごと。月曜にリセットされ、また挑戦できます</span>'
     : '<b>'+esc(spotStat.name)+'</b>の今週のライブシューティングが解放されました！<br>コート下のボタンでシチュエーションを選べます。';
-  var em = document.getElementById('unlockEmoji');
-  em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
-  document.getElementById('unlockBg').classList.add('open');
+  runTameReveal('unlockBg', 'unlockTame', 'unlockContent', 'unlockEmoji', function(){
+    document.getElementById('unlockDesc').innerHTML = desc;
+  });
 }
 onTap(document.getElementById('unlockCloseBtn'), function(){
   document.getElementById('unlockBg').classList.remove('open');
