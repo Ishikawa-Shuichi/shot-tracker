@@ -1393,7 +1393,7 @@ function renderLicenseList(list){
   list.forEach(function(d){
     var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
     var next = d.level && d.level.next;
-    var levelLine = '累計 '+d.totalAttempts+'本・'+d.totalDays+'日'+(next!=null ? '(次のレベルまであと'+(next-d.totalAttempts)+'本)' : '(最高レベル)');
+    var nextLine = next!=null ? '次のレベルまであと'+(next-d.totalAttempts)+'本' : '最高レベル';
 
     var card = document.createElement('div');
     card.className = 'card';
@@ -1404,14 +1404,18 @@ function renderLicenseList(list){
       + '<b class="grow" style="margin-left:8px">'+esc(d.name)+(d.userId===state.user.userId?'(自分)':'')+'</b>'
       + '</div>'
       + (d.title ? '<div class="muted" style="margin-top:6px">'+esc(d.title)+'</div>' : '')
-      + '<div class="muted" style="margin-top:6px; font-size:12px">'+levelLine+'</div>'
       + '<div class="row" style="margin-top:14px">';
     if(viewerHasFoundTrophies){
       html += '<div class="center grow"><div class="muted" style="font-size:12px">🏆 トロフィー</div><div class="pct" style="font-size:22px">'+d.trophyCount+'/'+d.trophyTotal+'</div></div>';
     }
     html += '<div class="center grow"><div class="muted" style="font-size:12px">連続中</div><div class="pct" style="font-size:22px">'+d.currentStreak+'日</div></div>'
       + '<div class="center grow"><div class="muted" style="font-size:12px">自己ベスト</div><div class="pct" style="font-size:22px">'+d.bestStreak+'日</div></div>'
-      + '</div>';
+      + '</div>'
+      + '<div class="row" style="margin-top:10px">'
+      + '<div class="center grow"><div class="muted" style="font-size:12px">累計本数</div><div class="pct" style="font-size:22px">'+d.totalAttempts+'本</div></div>'
+      + '<div class="center grow"><div class="muted" style="font-size:12px">累計日数</div><div class="pct" style="font-size:22px">'+d.totalDays+'日</div></div>'
+      + '</div>'
+      + '<div class="muted" style="margin-top:6px; font-size:12px; text-align:center">'+nextLine+'</div>';
     if(d.goal && d.goal.weeklyGoal > 0){
       var pct = Math.round(d.goal.weekAttempts / d.goal.weeklyGoal * 1000) / 10;
       html += '<div style="margin-top:14px"><div class="row"><span class="muted" style="font-size:12px">週目標</span>'
