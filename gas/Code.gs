@@ -611,7 +611,7 @@ function evaluateTrophies_(userId, displayName, shots) {
       Object.keys(memberMap).forEach(function (uid) {
         if (uid === userId) return;
         if (uid.indexOf('proxy-') === 0) return; // 代理記録用の仮メンバーはLINEに存在しない
-        pushLineMessageTo_(uid, '🏆 今、' + displayName + 'さんが新しいトロフィーを解放しました！\n(内容はひみつ。本人に聞いてみよう)');
+        pushLineMessageTo_(uid, '🏆 今、' + displayName + 'さんが新しいトロフィーを解放しました！');
       });
     } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
   }
