@@ -814,12 +814,18 @@ function liveCheckWeek_(recs) {
 }
 
 // spotId -> {unlocked, ever, weekAttempts, windowMakes, windowAttempts, windowPct}
-function computeLiveStatus_(shots, userId) {
+// spots: ライブ解放の対象をスリーポイント7スポット(共通スコープのみ)に絞るために必要
+function computeLiveStatus_(shots, userId, spots) {
+  var liveEligibleIds = {};
+  (spots || []).forEach(function (sp) {
+    if (sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1) liveEligibleIds[sp.id] = true;
+  });
   var thisWeek = weekKeyOf_(dateOf_(new Date()));
   var bySpotWeek = {};
   shots.forEach(function (s) {
     if (s.userId !== userId) return;
     if (s.situation) return; // 解放判定はスポットシューティング(指定なし)のみで数える
+    if (!liveEligibleIds[s.spotId]) return; // ライブシューティングはスリーポイント7スポットのみが対象
     var wk = weekKeyOf_(s.date);
     if (wk < LIVE_FEATURE_START_WEEK) return; // 機能公開前の週は判定対象外
     var spotMap = bySpotWeek[s.spotId] || (bySpotWeek[s.spotId] = {});
@@ -860,8 +866,8 @@ function computeLiveStatus_(shots, userId) {
 function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spots) {
   if (userId === HOST_USER_ID) return;
   try {
-    var before = computeLiveStatus_(shotsBefore, userId);
-    var after = computeLiveStatus_(shotsAfter, userId);
+    var before = computeLiveStatus_(shotsBefore, userId, spots);
+    var after = computeLiveStatus_(shotsAfter, userId, spots);
     var spotName = {}; spots.forEach(function (sp) { spotName[sp.id] = sp.name; });
     var newSpotNames = [];
     Object.keys(after).forEach(function (spotId) {
@@ -907,7 +913,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
     var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
   });
-  var liveMap = computeLiveStatus_(shots, userId);
+  var liveMap = computeLiveStatus_(shots, userId, spots);
   var noLive = { unlocked: false, ever: false, weekAttempts: 0, windowMakes: 0, windowAttempts: 0, windowPct: 0 };
   var stats = spots.map(function (sp) {
     var b = bySpot[sp.id] || { makes: 0, attempts: 0 };
