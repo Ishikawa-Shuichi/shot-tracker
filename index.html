@@ -1368,6 +1368,7 @@ function detectGoalAchievement(prevStats, newStats){
   var newWeek = newStats.weekAttempts || 0;
   if(prevWeek < g.weeklyGoal && newWeek >= g.weeklyGoal){
     playUnlockSound();
+    try{ if(navigator.vibrate) navigator.vibrate([60,50,120]); }catch(e){} // Androidでは軽い振動も(解放演出より控えめ)
     toast('🎯 週目標を達成しました！');
     var bar = document.getElementById('goalBar');
     if(bar){ bar.classList.remove('goal-pop'); void bar.offsetWidth; bar.classList.add('goal-pop'); }
