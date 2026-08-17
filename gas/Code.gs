@@ -617,11 +617,10 @@ function evaluateTrophies_(userId, displayName, shots) {
       var memberMap = {};
       getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
       uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
-      Object.keys(memberMap).forEach(function (uid) {
-        if (uid === userId) return;
-        if (uid.indexOf('proxy-') === 0) return; // 代理記録用の仮メンバーはLINEに存在しない
-        pushLineMessageTo_(uid, '🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！');
+      var targets = Object.keys(memberMap).filter(function (uid) {
+        return uid !== userId && uid.indexOf('proxy-') !== 0; // 本人と代理記録用の仮メンバー以外
       });
+      pushLineMessageBatch_(targets, '🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！');
     } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
   }
   return newOnes;
@@ -879,11 +878,11 @@ function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spo
     getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
     uniqueMembers_(shotsAfter).forEach(function (m) { memberMap[m.userId] = m.name; });
     var text = '🔥 ' + displayName + 'さんが「' + newSpotNames.join('・') + '」のライブシューティングを解放しました！';
-    Object.keys(memberMap).forEach(function (uid) {
-      if (uid === userId) return; // 解放した本人には送らない(ホストは通常の受信者として扱う)
-      if (uid.indexOf('proxy-') === 0) return; // 代理記録用の仮メンバーはLINEに存在しない
-      pushLineMessageTo_(uid, text);
+    var targets = Object.keys(memberMap).filter(function (uid) {
+      // 解放した本人と代理記録用の仮メンバー以外(ホストは通常の受信者として扱う)
+      return uid !== userId && uid.indexOf('proxy-') !== 0;
     });
+    pushLineMessageBatch_(targets, text);
   } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
 }
 
@@ -1356,4 +1355,26 @@ function pushLineMessageTo_(to, text) {
     return false;
   }
   return true;
+}
+
+// 複数人へ同じ文面を一括送信する。1人ずつ直列に送ると人数×0.3〜0.5秒かかり、
+// 記録保存のレスポンス(=解放演出の表示)がその分遅れてしまうため、fetchAllで並列に送る
+function pushLineMessageBatch_(userIds, text) {
+  var token = getLineToken_();
+  if (!token) { Logger.log('LINE_TOKEN未設定のため送信しません'); return; }
+  if (!userIds.length) return;
+  var reqs = userIds.map(function (uid) {
+    return {
+      url: 'https://api.line.me/v2/bot/message/push',
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + token },
+      payload: JSON.stringify({ to: uid, messages: [{ type: 'text', text: text }] }),
+      muteHttpExceptions: true
+    };
+  });
+  var results = UrlFetchApp.fetchAll(reqs);
+  results.forEach(function (res, i) {
+    if (res.getResponseCode() !== 200) Logger.log('送信失敗(' + userIds[i] + '): ' + res.getContentText());
+  });
 }

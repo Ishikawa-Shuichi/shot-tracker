@@ -597,6 +597,36 @@ function removePendingOp(opId){
   savePendingOpsToStorage();
   updatePendingBadge();
 }
+
+// ---- 送信中の控え ----
+// 保存は「即閉じ→裏で送信」のため、送信の途中でアプリを閉じられると成功も失敗も検知できず記録が消えてしまう。
+// 送信開始時に控えを残し、成否が確定したら消す。起動時に控えが残っていたら未送信キューへ移して復元する
+// (サーバー側はclientIdで重複排除されるため、実際には届いていた場合に二重送信しても安全)
+var INFLIGHT_KEY = 'inFlightShots_v1';
+function setInFlight(payload){
+  try{
+    var m = JSON.parse(localStorage.getItem(INFLIGHT_KEY) || '{}');
+    m[payload.clientId] = payload;
+    localStorage.setItem(INFLIGHT_KEY, JSON.stringify(m));
+  }catch(e){}
+}
+function clearInFlight(clientId){
+  try{
+    var m = JSON.parse(localStorage.getItem(INFLIGHT_KEY) || '{}');
+    delete m[clientId];
+    localStorage.setItem(INFLIGHT_KEY, JSON.stringify(m));
+  }catch(e){}
+}
+function recoverInFlightShots(){
+  try{
+    var m = JSON.parse(localStorage.getItem(INFLIGHT_KEY) || '{}');
+    Object.keys(m).forEach(function(cid){
+      if(!isPendingId(cid)) state.pendingShots.push(m[cid]);
+    });
+    if(Object.keys(m).length){ savePendingToStorage(); }
+    localStorage.removeItem(INFLIGHT_KEY);
+  }catch(e){}
+}
 // 保存直後、その場でコート/じぶんタブ/履歴に反映する(未送信でも見た目には即反映)。
 // 本人の記録はマイ統計へ、ホストの代理記録は代理表示用の統計へ反映する。
 function applyOptimisticShot(payload){
@@ -665,6 +695,7 @@ setInterval(trySyncPending, 20000);
 // その裏でLIFFログイン確認と最新データ取得を並行して進め、届き次第そっと置き換える。
 state.pendingShots = loadPendingFromStorage();
 state.pendingOps = loadPendingOpsFromStorage();
+recoverInFlightShots(); // 前回、送信の途中でアプリを閉じた記録があれば未送信キューへ復元
 updatePendingBadge();
 
 var BOOT_CACHE_KEY = 'bootCache_v1';
@@ -1192,11 +1223,15 @@ onTap(document.getElementById('recSave'), async function(){
   closeRecord();
   applyOptimisticShot(payload);
   toast('保存しました ✅');
+  // この記録で解放条件を満たしたなら、サーバー応答を待たずにその場で演出を出す(見逃し防止)
+  predictLiveUnlock(payload);
 
   // ここから先は画面を待たせない(失敗しても記録は未送信キューに残って自動再送される)
   (async function(){
+    setInFlight(payload); // 送信の途中でアプリを閉じても記録が消えないよう、送信中の控えを残す
     try{
       var res = await api('recordShot', payload);
+      clearInFlight(payload.clientId);
       // サーバー確定値で置き換える(見た目は概算値と同じになるはず)
       applyMyStats(res.myStats);
       if(res.streak != null){
@@ -1218,6 +1253,7 @@ onTap(document.getElementById('recSave'), async function(){
         }
       }
     }catch(e){
+      clearInFlight(payload.clientId); // 未送信キュー or エラー処理に引き継ぐので送信中の控えは消す
       if(e.isNetworkError){
         // オフライン: 端末に貯めて後で自動送信する(画面には反映済み)
         addPending(payload);
@@ -1283,7 +1319,7 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
 
 // ================= マイ =================
 function applyMyStats(stats){
-  detectLiveUnlocks(state.myStats, stats);
+  detectLiveUnlocks(state.myStats, stats, state.user.userId);
   detectGoalAchievement(state.myStats, stats);
   state.myStats = stats;
   renderMyStatsView(stats);
@@ -1426,22 +1462,82 @@ function renderLicenseList(list){
     host.appendChild(card);
   });
 }
-// ライブシューティングが「解放された瞬間」を検出して演出を出す。
-// 前回データにlive情報が無い場合(旧キャッシュや初回取得)は、誤爆防止のため演出しない
-function detectLiveUnlocks(prevStats, newStats){
-  if(!prevStats || !newStats || !prevStats.spots || !newStats.spots) return;
-  if(prevStats.__fromCache) return; // 起動キャッシュとの比較では演出しない(前セッションの解放を誤検出するため)
+// ---- ライブ解放演出の見逃し防止 ----
+// 「どの解放をこの端末で演出済みか」を月単位で保存しておき、未演出の解放を見つけたら
+// (保存直後の即時予測・サーバー応答・次回起動時のどのタイミングでも)必ず一度だけ演出する。
+// サーバー応答のラグ中にユーザーが次のシューティングへ行っても、演出が失われることはない
+var CELEBRATED_LIVE_KEY = 'celebratedLiveUnlocks_v1';
+function celebratedKey(ownerUserId, spotId){ return ownerUserId + '|' + spotId + '|' + todayStr().slice(0,7); }
+function isCelebrated(ownerUserId, spotId){
+  try{ return !!JSON.parse(localStorage.getItem(CELEBRATED_LIVE_KEY) || '{}')[celebratedKey(ownerUserId, spotId)]; }catch(e){ return false; }
+}
+function markCelebrated(ownerUserId, spotId){
+  try{
+    var m = JSON.parse(localStorage.getItem(CELEBRATED_LIVE_KEY) || '{}');
+    m[celebratedKey(ownerUserId, spotId)] = true;
+    localStorage.setItem(CELEBRATED_LIVE_KEY, JSON.stringify(m));
+  }catch(e){ /* 保存できない場合は演出が重複しうるだけで実害はない */ }
+}
+function maybeCelebrateLiveUnlock(ownerUserId, spotStat, firstEver){
+  if(isCelebrated(ownerUserId, spotStat.spotId)) return;
+  markCelebrated(ownerUserId, spotStat.spotId);
+  showLiveUnlock(spotStat, firstEver);
+}
+// サーバーから届いた統計に「まだ演出していない解放」があれば演出する(起動時のキャッシュ表示分も対象)
+function detectLiveUnlocks(prevStats, newStats, ownerUserId){
+  if(!newStats || !newStats.spots) return;
   var prevBySpot = {};
-  prevStats.spots.forEach(function(s){ if(s.live) prevBySpot[s.spotId] = s.live; });
+  if(prevStats && prevStats.spots) prevStats.spots.forEach(function(s){ if(s.live) prevBySpot[s.spotId] = s.live; });
   for(var i=0; i<newStats.spots.length; i++){
     var s = newStats.spots[i];
+    if(!s.live || !s.live.unlocked) continue;
+    if(isCelebrated(ownerUserId, s.spotId)) continue;
     var prev = prevBySpot[s.spotId];
-    if(!prev || !s.live) continue;
-    if(!prev.unlocked && s.live.unlocked){
-      showLiveUnlock(s, !prev.ever);
-      break; // 同時に複数解放しても演出は1つずつ(まれなケース)
-    }
+    maybeCelebrateLiveUnlock(ownerUserId, s, !(prev && prev.ever));
+    break; // 一度に出す演出は1つ(残りがあれば次の検出タイミングで出る)
   }
+}
+
+// ---- 保存した瞬間の即時判定(ラグ対策) ----
+// 解放判定は決まったルールなので、直近の記録(履歴+未送信キュー)が手元に揃っていれば端末側でも厳密に再現できる。
+// サーバー応答(数秒かかることがある)を待たずにその場で演出を出し、応答後の検出は演出済み記録で自動的にスキップされる。
+// 手元の記録だけで直近30本の窓が完結しない場合は判定せず、従来どおりサーバー応答時に任せる(誤発火ゼロを優先)
+var LIVE_ELIGIBLE_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
+var LIVE_EPOCH_DATE = '2026-08-10';
+function predictLiveUnlock(payload){
+  try{
+    if(payload.situation) return;                                        // 解放判定はスポットシューティングのみ
+    if(LIVE_ELIGIBLE_NAMES.indexOf(payload.spotName) === -1) return;     // スリーポイント7スポットのみ
+    if(payload.ym !== todayStr().slice(0,7)) return;                     // 今月の記録のみ(過去日付入力は対象外)
+    if(payload.date < LIVE_EPOCH_DATE) return;
+    var viewUserId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
+    if(viewUserId !== payload.userId) return;                            // 手元の履歴が対象者のものである時だけ
+    var live = liveForSpot(payload.spotId);
+    if(live && live.unlocked) return;                                    // 既に解放済み
+
+    // このスポットの今月のスポットシューティング記録を古い順に集める(履歴(サーバー確定)+未送信+今回の分)
+    var recs = state.historyItems.slice().reverse().filter(function(h){
+      return h.spotId === payload.spotId && !h.situation && h.ym === payload.ym && h.date >= LIVE_EPOCH_DATE;
+    }).concat(state.pendingShots.filter(function(p){
+      return p.userId === payload.userId && p.spotId === payload.spotId && !p.situation && p.ym === payload.ym && p.clientId !== payload.clientId;
+    })).concat([payload]);
+
+    var totalA = 0; recs.forEach(function(r){ totalA += r.attempts; });
+    if(totalA < 30) return; // 窓が手元の記録で完結しない可能性があるときは判定しない
+    var a = 0, m = 0;
+    for(var j = recs.length - 1; j >= 0; j--){
+      a += recs[j].attempts; m += recs[j].makes;
+      if(a >= 30) break;
+    }
+    if(a >= 30 && m / a >= 0.5){
+      var firstEver = !(live && live.ever);
+      // 画面上のライブ状態も先に更新し、演出を閉じた直後からコート下のボタンが使えるようにする
+      var statsSource = liveStatsSource();
+      var s = statsSource && statsSource.spots.find(function(x){ return x.spotId === payload.spotId; });
+      if(s){ s.live = s.live || {}; s.live.unlocked = true; s.live.ever = true; renderLiveBar(); }
+      maybeCelebrateLiveUnlock(payload.userId, { spotId: payload.spotId, name: payload.spotName }, firstEver);
+    }
+  }catch(e){ /* 予測に失敗してもサーバー応答時の演出に任せるだけ */ }
 }
 // ---- 解放効果音(Web Audio APIで合成。外部ファイル不要・オフラインでも鳴る) ----
 // スマホのブラウザは「ユーザーが画面を触った瞬間」しか音声を有効化できないため、
@@ -1518,6 +1614,7 @@ function runTameReveal(bgId, tameId, contentId, emojiId, applyContent){
     content.classList.remove('hidden');
     content.classList.add('reveal-fade');
     playUnlockSound();
+    try{ if(navigator.vibrate) navigator.vibrate([80,60,80,60,220]); }catch(e){} // Androidでは振動でも気づかせる
     var em = document.getElementById(emojiId);
     em.classList.remove('unlock-pop'); void em.offsetWidth; em.classList.add('unlock-pop');
   }, TAME_MS);
@@ -1949,7 +2046,7 @@ async function refreshProxyStats(){
     var freshFor = state.recordingAs.userId;
     var fresh = await api('getMyStats', { userId: state.user.userId, targetUserId: freshFor, ym: state.ym });
     // 代理記録中の相手が解放した瞬間もホストの画面で祝う(対象者が同じ人のときだけ比較する)
-    detectLiveUnlocks(state.proxyStatsUserId === freshFor ? state.proxyStats : null, fresh);
+    detectLiveUnlocks(state.proxyStatsUserId === freshFor ? state.proxyStats : null, fresh, freshFor);
     state.proxyStats = fresh;
     state.proxyStatsUserId = freshFor;
   }
