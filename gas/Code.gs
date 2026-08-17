@@ -790,18 +790,19 @@ function actionGetAllLicenses_(body) {
 // ===== 集計ロジック(使い回し用) ==================================
 
 // ---- ライブシューティング解放判定 ----
-// そのスポットの「今週のスポットシューティング(シチュエーション指定なし)」で、
+// そのスポットの「今月のスポットシューティング(シチュエーション指定なし)」で、
 // 直近30本(記録単位で30本以上になる最小の末尾)の確率が50%以上になった瞬間に解放。
-// 一度達成すればその週の間は解放が維持され、週が変わる(月曜)と再ロックされる。
+// 一度達成すればその月の間は解放が維持され、月が変わると再ロックされる。
 // ever(過去に一度でも達成したことがあるか)は、初達成までUIに存在自体を見せない隠し要素判定に使う。
 var LIVE_UNLOCK_ATTEMPTS = 30;
 var LIVE_UNLOCK_RATE = 0.5;
-// この週(月曜)より前の記録は解放判定に使わない。
+// この日付より前の記録は解放判定に使わない。
 // 機能公開前の過去データで達成済み扱いになると「初解放」の演出と隠し要素性が失われるため
-var LIVE_FEATURE_START_WEEK = '2026-08-10';
+// (2026-08-10以降の実データで誰も即解放されないことは確認済み)
+var LIVE_FEATURE_START_DATE = '2026-08-10';
 
-// 週内の記録(時系列)を1件ずつ進めながら、その時点の直近30本が50%以上になった瞬間があったか
-function liveCheckWeek_(recs) {
+// 期間内の記録(時系列)を1件ずつ進めながら、その時点の直近30本が50%以上になった瞬間があったか
+function liveCheckPeriod_(recs) {
   for (var i = 0; i < recs.length; i++) {
     var a = 0, m = 0;
     for (var j = i; j >= 0; j--) {
@@ -813,36 +814,35 @@ function liveCheckWeek_(recs) {
   return false;
 }
 
-// spotId -> {unlocked, ever, weekAttempts, windowMakes, windowAttempts, windowPct}
+// spotId -> {unlocked, ever, periodAttempts, windowMakes, windowAttempts, windowPct}
 // spots: ライブ解放の対象をスリーポイント7スポット(共通スコープのみ)に絞るために必要
 function computeLiveStatus_(shots, userId, spots) {
   var liveEligibleIds = {};
   (spots || []).forEach(function (sp) {
     if (sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1) liveEligibleIds[sp.id] = true;
   });
-  var thisWeek = weekKeyOf_(dateOf_(new Date()));
-  var bySpotWeek = {};
+  var thisMonth = currentYm_();
+  var bySpotMonth = {};
   shots.forEach(function (s) {
     if (s.userId !== userId) return;
     if (s.situation) return; // 解放判定はスポットシューティング(指定なし)のみで数える
     if (!liveEligibleIds[s.spotId]) return; // ライブシューティングはスリーポイント7スポットのみが対象
-    var wk = weekKeyOf_(s.date);
-    if (wk < LIVE_FEATURE_START_WEEK) return; // 機能公開前の週は判定対象外
-    var spotMap = bySpotWeek[s.spotId] || (bySpotWeek[s.spotId] = {});
-    (spotMap[wk] || (spotMap[wk] = [])).push(s);
+    if (s.date < LIVE_FEATURE_START_DATE) return; // 機能公開前の記録は判定対象外
+    var spotMap = bySpotMonth[s.spotId] || (bySpotMonth[s.spotId] = {});
+    (spotMap[s.ym] || (spotMap[s.ym] = [])).push(s);
   });
   var out = {};
-  Object.keys(bySpotWeek).forEach(function (spotId) {
-    var weeks = bySpotWeek[spotId];
-    var ever = false, unlocked = false, weekAttempts = 0, windowMakes = 0, windowAttempts = 0;
-    Object.keys(weeks).forEach(function (wk) {
-      var recs = weeks[wk];
+  Object.keys(bySpotMonth).forEach(function (spotId) {
+    var months = bySpotMonth[spotId];
+    var ever = false, unlocked = false, periodAttempts = 0, windowMakes = 0, windowAttempts = 0;
+    Object.keys(months).forEach(function (ym) {
+      var recs = months[ym];
       recs.sort(function (a, b) { return a.ts < b.ts ? -1 : 1; }); // 記録した順
-      var hit = liveCheckWeek_(recs);
+      var hit = liveCheckPeriod_(recs);
       if (hit) ever = true;
-      if (wk === thisWeek) {
+      if (ym === thisMonth) {
         unlocked = hit;
-        recs.forEach(function (r) { weekAttempts += r.attempts; });
+        recs.forEach(function (r) { periodAttempts += r.attempts; });
         var a = 0, m = 0;
         for (var j = recs.length - 1; j >= 0; j--) {
           a += recs[j].attempts; m += recs[j].makes;
@@ -852,7 +852,7 @@ function computeLiveStatus_(shots, userId, spots) {
       }
     });
     out[spotId] = {
-      unlocked: unlocked, ever: ever, weekAttempts: weekAttempts,
+      unlocked: unlocked, ever: ever, periodAttempts: periodAttempts,
       windowMakes: windowMakes, windowAttempts: windowAttempts,
       windowPct: pct_(windowMakes, windowAttempts)
     };
@@ -914,7 +914,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
     b.makes += s.makes; b.attempts += s.attempts;
   });
   var liveMap = computeLiveStatus_(shots, userId, spots);
-  var noLive = { unlocked: false, ever: false, weekAttempts: 0, windowMakes: 0, windowAttempts: 0, windowPct: 0 };
+  var noLive = { unlocked: false, ever: false, periodAttempts: 0, windowMakes: 0, windowAttempts: 0, windowPct: 0 };
   var stats = spots.map(function (sp) {
     var b = bySpot[sp.id] || { makes: 0, attempts: 0 };
     return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts), live: liveMap[sp.id] || noLive };

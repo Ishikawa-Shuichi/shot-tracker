@@ -1536,8 +1536,8 @@ onTap(document.getElementById('trophyCloseBtn'), function(){
 
 function showLiveUnlock(spotStat, firstEver){
   var desc = firstEver
-    ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>コートの下にシチュエーションボタン(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は週ごと。月曜にリセットされ、また挑戦できます</span>'
-    : '<b>'+esc(spotStat.name)+'</b>の今週のライブシューティングが解放されました！<br>コート下のボタンでシチュエーションを選べます。';
+    ? '<b>'+esc(spotStat.name)+'</b>で直近30本50%以上を達成！<br>隠し要素<b>「ライブシューティング」</b>が解放されました。<br>コートの下にシチュエーションボタン(HO/チェック/ミート/ドリブル)が出現します。<br><span style="color:var(--muted)">※解放は月ごと。月が変わるとリセットされ、また挑戦できます</span>'
+    : '<b>'+esc(spotStat.name)+'</b>の今月のライブシューティングが解放されました！<br>コート下のボタンでシチュエーションを選べます。';
   runTameReveal('unlockBg', 'unlockTame', 'unlockContent', 'unlockEmoji', function(){
     document.getElementById('unlockDesc').innerHTML = desc;
   });
