@@ -115,6 +115,27 @@
 <div class="wrap">
   <!-- ===== 記録タブ ===== -->
   <section id="tab-record">
+    <!-- チーム共同ゴール(期間限定イベント)。開催中のみ表示 -->
+    <div class="card hidden" id="festCard" style="border-color:var(--accent)">
+      <div class="row"><b class="grow" id="festTitle">🎉 シュートフェス</b><span class="pill" id="festTierBadge"></span></div>
+      <div class="muted" style="font-size:12px; margin-top:2px" id="festSub"></div>
+      <div id="festMeter" style="margin-top:10px; border-radius:12px; overflow:hidden; position:relative; height:110px; background:linear-gradient(to top, #6b4a2a 0%, #4a7c3f 8%, #3aa0ff 40%, #1c3a6e 72%, #0a0f2e 100%);">
+        <div id="festMeterMarker" style="position:absolute; left:50%; transform:translate(-50%,50%); font-size:24px; bottom:0%; transition:bottom .6s ease; filter:drop-shadow(0 0 4px rgba(0,0,0,.6));">🚀</div>
+        <div style="position:absolute; left:6px; right:6px; bottom:33.3%; border-top:1px dashed rgba(255,255,255,.35); font-size:10px; color:#fff; padding-top:2px;">🥉<span id="festTier1Label"></span></div>
+        <div style="position:absolute; left:6px; right:6px; bottom:66.6%; border-top:1px dashed rgba(255,255,255,.35); font-size:10px; color:#fff; padding-top:2px;">🥈<span id="festTier2Label"></span></div>
+        <div style="position:absolute; left:6px; right:6px; top:2px; font-size:10px; color:#fff;">🥇<span id="festTier3Label"></span></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="muted" style="font-size:12px" id="festTotalText"></span>
+        <span class="muted" style="font-size:12px" id="festMineText"></span>
+      </div>
+      <div class="hidden" id="festDoubleBanner" style="margin-top:10px; padding:8px; border-radius:10px; background:var(--card2); text-align:center; font-weight:700; color:var(--accent)">🔥 本日は2倍デー！今打った本数が2倍でチーム目標に加算されます</div>
+      <div class="hidden" id="festExtraCard" style="margin-top:10px; padding:10px; border-radius:10px; background:var(--card2)">
+        <div class="row"><b class="grow" style="font-size:13px">🎁 エクストラミッション</b></div>
+        <div class="muted" style="font-size:12px; margin-top:4px" id="festExtraDesc"></div>
+        <button class="btn" id="festJoinBtn" style="margin-top:8px">参加する</button>
+      </div>
+    </div>
     <div class="card hidden" id="proxyCard">
       <div class="row"><b class="grow">記録対象(ホスト限定)</b></div>
       <select id="proxySel" style="margin-top:6px"></select>
@@ -304,6 +325,23 @@
 
   <!-- ===== 設定タブ ===== -->
   <section id="tab-settings" class="hidden">
+    <div class="card">
+      <details>
+        <summary style="cursor:pointer; font-weight:700">📖 使い方</summary>
+        <div style="margin-top:12px; line-height:1.8; font-size:13px">
+          <b>記録する</b>
+          <div class="muted">「記録」タブでコート上のスポットをタップ→試投数とメイク数を入力→保存。数字はボタンを押すか、長押しで連続で増減できます。</div>
+          <b style="display:block; margin-top:12px">共通とマイページ</b>
+          <div class="muted">「共通」はチーム全員で使うスポット。「マイページ」は自分専用のスポットで、設定タブから自由に追加できます。</div>
+          <b style="display:block; margin-top:12px">じぶんタブ</b>
+          <div class="muted">自分のスタッツと、期間ごとの推移グラフが見られます。週の目標本数もここで設定できます(初期状態は非公開。公開にすると仲間のライセンスにも達成率が表示されます)。</div>
+          <b style="display:block; margin-top:12px">チームタブ</b>
+          <div class="muted">「ランキング」でチーム全体の成績を、「ライセンス」で仲間ひとりひとりの連続記録・累計本数などを見られます。</div>
+          <b style="display:block; margin-top:12px">連続記録</b>
+          <div class="muted">記録した日が続くとヘッダーに🔥連続日数が表示されます。チームタブでは、今連続記録中の人がみんな見られます。</div>
+        </div>
+      </details>
+    </div>
     <div class="card">
       <b>表示名の変更</b>
       <div class="muted" style="margin:6px 0">チーム内でのあなたの表示名です</div>
@@ -736,6 +774,7 @@ function applyBootData(d, fromCache){
   state.trophyTotal = d.trophyTotal || 0;
   state.myGoal = d.myGoal || { weeklyGoal: 0, public: false };
   renderTrophyNav();
+  applyFestStatus(d.fest);
   renderCourt();
   renderEditCourt();
   fillSpotSelectors();
@@ -1252,6 +1291,8 @@ onTap(document.getElementById('recSave'), async function(){
           showTrophyUnlock(res.newTrophies, (state.recordingAs && state.recordingAs.name) || '');
         }
       }
+      applyFestStatus(res.fest);
+      if(res.newFestTier != null) celebrateFestTier(res.newFestTier);
     }catch(e){
       clearInFlight(payload.clientId); // 未送信キュー or エラー処理に引き継ぐので送信中の控えは消す
       if(e.isNetworkError){
@@ -1336,6 +1377,64 @@ function setMyPage(p){
   document.getElementById('myPageStats').classList.toggle('hidden', p!=='stats');
   document.getElementById('myPageTrend').classList.toggle('hidden', p!=='trend');
   if(p==='stats') refreshMyTab(); else loadTrend();
+}
+
+// ================= チーム共同ゴール(シュートフェス) =================
+// 上限なし。誰の1本もそのまま積み上がる。地上→空→宇宙の高度メーターで、
+// 自分の貢献も含めた進み具合を実感できるようにする。
+state.fest = null;
+// 段階達成の演出は、保存直後にサーバーが返すnewFestTier(この保存で実際に越えた段階)だけをきっかけにする。
+// ここでは状態の更新と再描画だけを行い、演出の判定はしない(二重発火防止)。
+function applyFestStatus(fest){
+  if(!fest) return;
+  state.fest = fest;
+  renderFestCard(fest);
+}
+function renderFestCard(fest){
+  var card = document.getElementById('festCard');
+  if(!fest || !fest.enabled){ card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  document.getElementById('festTitle').textContent = '🎉 ' + fest.name;
+  document.getElementById('festTierBadge').textContent = fest.tierReached + '/' + fest.tiers.length + '段階';
+  document.getElementById('festTier1Label').textContent = fest.tiers[0] + '本';
+  document.getElementById('festTier2Label').textContent = fest.tiers[1] + '本';
+  document.getElementById('festTier3Label').textContent = fest.tiers[2] + '本';
+  var top = fest.tiers[fest.tiers.length - 1];
+  var pct = Math.max(0, Math.min(100, Math.round(fest.displayTotal / top * 100)));
+  document.getElementById('festMeterMarker').style.bottom = pct + '%';
+  document.getElementById('festTotalText').textContent = '合計 ' + fest.displayTotal + '本';
+  document.getElementById('festMineText').textContent = 'あなたの貢献: ' + fest.myContribution + '本';
+  document.getElementById('festSub').textContent = fest.isSunday ? '本日は最終日です' : (fest.range.monday + '〜' + fest.range.sunday);
+
+  var doubleBanner = document.getElementById('festDoubleBanner');
+  var extraCard = document.getElementById('festExtraCard');
+  doubleBanner.classList.toggle('hidden', fest.mode !== 'double');
+  extraCard.classList.toggle('hidden', fest.mode !== 'extra');
+  if(fest.mode === 'extra' && fest.extra){
+    document.getElementById('festExtraDesc').textContent =
+      '参加表明 ' + fest.extra.participants + '人 → 追加目標 ' + fest.extra.target + '本(現在地までの合計本数と比較して伸ばそう)';
+    var btn = document.getElementById('festJoinBtn');
+    btn.textContent = fest.extra.joined ? '参加済み ✅' : '参加する';
+    btn.disabled = fest.extra.joined;
+  }
+}
+onTap(document.getElementById('festJoinBtn'), async function(){
+  var btn = document.getElementById('festJoinBtn');
+  if(btn.disabled) return;
+  try{
+    btn.disabled = true;
+    var fest = await api('festParticipate', { userId: state.user.userId, displayName: state.user.displayName });
+    applyFestStatus(fest);
+    toast('エクストラミッションに参加しました🎁');
+  }catch(e){ toast('エラー: '+e.message); btn.disabled = false; }
+});
+// 1・2段階目はアプリ内だけで祝う(3段階目はLINE通知も飛ぶので、ここでは軽めの演出にする)
+function celebrateFestTier(tier){
+  playUnlockSound();
+  try{ if(navigator.vibrate) navigator.vibrate([60,50,60,50,150]); }catch(e){}
+  toast('🎉 フェス' + tier + '段階目、達成！');
+  var marker = document.getElementById('festMeterMarker');
+  if(marker){ marker.classList.remove('unlock-pop'); void marker.offsetWidth; marker.classList.add('unlock-pop'); }
 }
 
 // ================= 週目標(本数・デフォルト非公開) =================

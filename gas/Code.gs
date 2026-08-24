@@ -26,6 +26,36 @@ function getLineToken_() {
 var SHEET_SPOTS = 'Spots';
 var SHEET_SHOTS = 'Shots';
 var SHEET_GOALS = 'Goals';
+var SHEET_FEST_PARTICIPANTS = 'FestParticipants';
+
+// ===== チーム共同ゴール(シュートフェス) ============================
+// 期間限定(1週間)のチーム協力イベント。上限は設けない(頑張るほど得をする設計を貫く)。
+// 3段階の目標を、シチュエーション・スポットを問わず全員の全記録の合計本数で判定する。
+var FEST_ENABLED = true;
+var FEST_NAME = 'シュートフェス';
+var FEST_WEEK_MONDAY = '2026-08-24'; // 対象週(月曜)。次回開催時はここを書き換える
+var FEST_TIERS = [1000, 2000, 3000];
+var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
+var FEST_SUNDAY_MULTIPLIER = 2;  // 3段階目未達のまま日曜を迎えた場合、その日の本数を何倍で加算するか
+// フェス期間中は通知量を絞る(いったん停止)。フェス終了後はfalseに戻す想定
+var NOTIFY_LIVE_UNLOCK_PAUSED = true;
+var NOTIFY_TROPHY_GATEWAY_ONLY = true; // trueなら「3日連続」以外のチーム初獲得は通知しない
+
+// 一斉配信(トロフィー・ライブ解放・フェス通知)の対象から常に外す人。
+// テストアカウント・運営(ホスト)自身・辞退者は無料メッセージ枠を消費する必要がないため。
+var BROADCAST_EXCLUDED_USER_IDS = [
+  'U6882c6acc6c7e206fd4baefad8af74e3', // テスト中
+  HOST_USER_ID,                        // 柊一(運営)
+  'Ued2c31e2ef57dbac6865029d145fdda8'  // 祥吾
+];
+function broadcastTargets_(memberMap, excludeUserId) {
+  return Object.keys(memberMap).filter(function (uid) {
+    if (uid === excludeUserId) return false; // 今回の当人(達成者本人)には送らない
+    if (uid.indexOf('proxy-') === 0) return false; // 代理記録用の仮メンバーはLINEに存在しない
+    if (BROADCAST_EXCLUDED_USER_IDS.indexOf(uid) !== -1) return false;
+    return true;
+  });
+}
 
 // 「スリーポイントランキング」「推移のスリーポイント合計」は以下7スポット(共通のみ)の合計で計算する
 var THREE_POINT_NAMES = ['左コーナー', '左ウイング', '左スロット', 'トップ', '右スロット', '右ウイング', '右コーナー'];
@@ -91,6 +121,8 @@ function doPost(e) {
       case 'getWeeklyRanking': data = actionGetWeeklyRanking_(body); break;
       case 'setGoal':     data = actionSetGoal_(body); break;
       case 'getAllLicenses': data = actionGetAllLicenses_(body); break;
+      case 'getFestStatus': data = actionGetFestStatus_(body); break;
+      case 'festParticipate': data = actionFestParticipate_(body); break;
       default:
         return json_({ ok: false, error: 'unknown action: ' + action });
     }
@@ -127,7 +159,8 @@ function actionInit_(body) {
     trophyTotal: TROPHY_DEFS.length,
     myGoal: getMyGoal_(userId),
     // 仲間のライセンス閲覧(誰でも誰の分でも見られる)用の選択肢として、ホスト以外にも渡す
-    members: uniqueMembers_(shots)
+    members: uniqueMembers_(shots),
+    fest: getFestStatus_(userId, shots)
   };
   return result;
 }
@@ -259,8 +292,9 @@ function actionRecordShot_(body) {
 
   var spots = getSpots_(actingUserId);
   if (!shots) shots = getShots_();
-  // トロフィー・ライブ解放通知は記録の持ち主(代理記録なら対象メンバー)に対して判定する。重複保存の再送時は判定しない
+  // トロフィー・ライブ解放・フェス段階通知は記録の持ち主(代理記録なら対象メンバー)に対して判定する。重複保存の再送時は判定しない
   var newTrophies = dupRow ? [] : evaluateTrophies_(userId, displayName, shots);
+  var newFestTier = dupRow ? null : checkFestTierCrossing_(shotsBefore, shots);
   if (!dupRow) notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shots, spots);
   return {
     id: id, ym: dupRow ? dupRow.ym : ym, duplicate: dupRow ? true : undefined,
@@ -268,7 +302,9 @@ function actionRecordShot_(body) {
     history: computeHistory_(spots, shots, actingUserId, 20),
     streak: computeStreak_(shots, actingUserId),
     newTrophies: newTrophies,
-    trophyOwner: userId
+    trophyOwner: userId,
+    fest: getFestStatus_(userId, shots),
+    newFestTier: newFestTier
   };
 }
 
@@ -605,7 +641,8 @@ function evaluateTrophies_(userId, displayName, shots) {
       if (!trophyConditionMet_(def, userId, shots, spots)) return;
       sh.appendRow([userId, def.id, new Date().toISOString(), displayName]);
       newOnes.push({ id: def.id, name: def.name, tier: def.tier });
-      if (!teamHas[def.id]) anyWorldFirst = true;
+      // フェス期間中は通数節約のため、3日連続(ゲートウェイ)以外のチーム初獲得では通知しない
+      if (!teamHas[def.id] && (!NOTIFY_TROPHY_GATEWAY_ONLY || def.id === TROPHY_GATEWAY_ID)) anyWorldFirst = true;
       teamHas[def.id] = true;
     });
   } finally {
@@ -617,10 +654,7 @@ function evaluateTrophies_(userId, displayName, shots) {
       var memberMap = {};
       getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
       uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
-      var targets = Object.keys(memberMap).filter(function (uid) {
-        return uid !== userId && uid.indexOf('proxy-') !== 0; // 本人と代理記録用の仮メンバー以外
-      });
-      pushLineMessageBatch_(targets, '🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！');
+      pushLineMessageBatch_(broadcastTargets_(memberMap, userId), '🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！');
     } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
   }
   return newOnes;
@@ -786,6 +820,129 @@ function actionGetAllLicenses_(body) {
   return { licenses: list };
 }
 
+// ===== チーム共同ゴール(シュートフェス) ============================
+
+function festDateRange_() {
+  var mon = new Date(FEST_WEEK_MONDAY + 'T00:00:00');
+  var sun = new Date(mon); sun.setDate(sun.getDate() + 6);
+  return { monday: FEST_WEEK_MONDAY, sunday: dateOf_(sun) };
+}
+
+// 対象週の合計本数。個人の週目標と同じ方針で、スポット・シチュエーションを問わず全記録を数える
+// (上限は設けない。誰かの頑張りがそのまま無駄なく積み上がる設計にするため)。
+// 日曜だけは「3段階目が未達のまま迎えた場合」倍率を掛けて底上げする。
+function festTotals_(shots) {
+  var range = festDateRange_();
+  var total = 0;
+  var byUser = {}; // 個人の貢献表示用
+  var sundayRaw = 0;
+  shots.forEach(function (s) {
+    if (s.date < range.monday || s.date > range.sunday) return;
+    total += s.attempts;
+    byUser[s.userId] = (byUser[s.userId] || 0) + s.attempts;
+    if (s.date === range.sunday) sundayRaw += s.attempts;
+  });
+  var tier3Value = FEST_TIERS[FEST_TIERS.length - 1];
+  var reachedTier3BeforeMultiplier = total >= tier3Value;
+  // 倍率は「日曜の時点で3段階目にまだ届いていない場合」のみ、日曜分の本数に適用する
+  var displayTotal = total;
+  var multiplierApplied = false;
+  if (!reachedTier3BeforeMultiplier) {
+    var todayStr = dateOf_(new Date());
+    if (todayStr === range.sunday) {
+      displayTotal = (total - sundayRaw) + sundayRaw * FEST_SUNDAY_MULTIPLIER;
+      multiplierApplied = sundayRaw > 0;
+    }
+  }
+  return { range: range, rawTotal: total, displayTotal: displayTotal, multiplierApplied: multiplierApplied, byUser: byUser };
+}
+
+function festTierReached_(displayTotal) {
+  var reached = 0;
+  FEST_TIERS.forEach(function (t) { if (displayTotal >= t) reached++; });
+  return reached; // 0〜3
+}
+
+function festExtraParticipants_() {
+  var range = festDateRange_();
+  var rows = getSheet_(SHEET_FEST_PARTICIPANTS).getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === range.monday) out.push({ userId: String(rows[i][1]), name: String(rows[i][2]) });
+  }
+  return out;
+}
+
+// フェスの状態をまとめて返す(記録タブ・チームタブでの表示、日曜の分岐判定に使う)
+function getFestStatus_(userId, shots) {
+  if (!FEST_ENABLED) return { enabled: false };
+  var range = festDateRange_();
+  var t = festTotals_(shots || getShots_());
+  var tierReached = festTierReached_(t.displayTotal);
+  var tier3Value = FEST_TIERS[FEST_TIERS.length - 1];
+  var todayStr = dateOf_(new Date());
+  var isSunday = todayStr === range.sunday;
+  var isOver = todayStr > range.sunday;
+  var mode = 'normal';
+  var extra = null;
+  if (isSunday && tierReached >= FEST_TIERS.length) {
+    mode = 'extra';
+    var participants = festExtraParticipants_();
+    extra = {
+      participants: participants.length,
+      target: participants.length * FEST_EXTRA_PER_PERSON,
+      joined: userId ? participants.some(function (p) { return p.userId === userId; }) : false
+    };
+  } else if (isSunday && t.multiplierApplied) {
+    mode = 'double';
+  }
+  return {
+    enabled: true, name: FEST_NAME, range: range, isSunday: isSunday, isOver: isOver,
+    tiers: FEST_TIERS, tierReached: tierReached,
+    rawTotal: t.rawTotal, displayTotal: t.displayTotal, multiplierApplied: t.multiplierApplied,
+    myContribution: userId ? (t.byUser[userId] || 0) : 0,
+    mode: mode, extra: extra
+  };
+}
+
+function actionGetFestStatus_(body) {
+  var userId = String(body.userId || '');
+  return getFestStatus_(userId, getShots_());
+}
+
+function actionFestParticipate_(body) {
+  var userId = String(body.userId || '');
+  var displayName = String(body.displayName || '名無し').trim();
+  if (!userId) throw new Error('userId が空です');
+  var status = getFestStatus_(userId, getShots_());
+  if (!status.enabled || status.mode !== 'extra') throw new Error('エクストラミッションは今は開催されていません');
+  if (!status.extra.joined) {
+    getSheet_(SHEET_FEST_PARTICIPANTS).appendRow([festDateRange_().monday, userId, displayName, new Date().toISOString()]);
+  }
+  return getFestStatus_(userId, getShots_());
+}
+
+// 記録保存直後に呼ぶ。今回の保存でチームの表示本数が段階を新たに超えたら、その段階番号(1〜3)を返す(超えていなければnull)。
+// 3段階目を超えた瞬間だけLINE通知も送る(1・2段階目はアプリ内表示のみ、通数節約のため)。
+function checkFestTierCrossing_(shotsBefore, shotsAfter) {
+  if (!FEST_ENABLED) return null;
+  var before = festTierReached_(festTotals_(shotsBefore).displayTotal);
+  var after = festTierReached_(festTotals_(shotsAfter).displayTotal);
+  if (after <= before) return null;
+  if (after >= FEST_TIERS.length) {
+    try {
+      var status = getFestStatus_(null, shotsAfter);
+      var memberMap = {};
+      getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+      uniqueMembers_(shotsAfter).forEach(function (m) { memberMap[m.userId] = m.name; });
+      var text = '🎉 ' + FEST_NAME + '、目標の' + FEST_TIERS[FEST_TIERS.length - 1] + '本を達成しました！\n'
+        + '日曜日は特別なエクストラミッションが解禁されます。お楽しみに🔥';
+      pushLineMessageBatch_(broadcastTargets_(memberMap, null), text);
+    } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
+  }
+  return after; // 1, 2, 3
+}
+
 // ===== 集計ロジック(使い回し用) ==================================
 
 // ---- ライブシューティング解放判定 ----
@@ -864,6 +1021,7 @@ function computeLiveStatus_(shots, userId, spots) {
 // ホスト自身の解放は検証や代理記録の動作確認で頻発しがちなためノイズになるので通知しない。
 function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spots) {
   if (userId === HOST_USER_ID) return;
+  if (NOTIFY_LIVE_UNLOCK_PAUSED) return; // フェス期間中は通数節約のためいったん停止
   try {
     var before = computeLiveStatus_(shotsBefore, userId, spots);
     var after = computeLiveStatus_(shotsAfter, userId, spots);
@@ -878,11 +1036,7 @@ function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spo
     getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
     uniqueMembers_(shotsAfter).forEach(function (m) { memberMap[m.userId] = m.name; });
     var text = '🔥 ' + displayName + 'さんが「' + newSpotNames.join('・') + '」のライブシューティングを解放しました！';
-    var targets = Object.keys(memberMap).filter(function (uid) {
-      // 解放した本人と代理記録用の仮メンバー以外(ホストは通常の受信者として扱う)
-      return uid !== userId && uid.indexOf('proxy-') !== 0;
-    });
-    pushLineMessageBatch_(targets, text);
+    pushLineMessageBatch_(broadcastTargets_(memberMap, userId), text);
   } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
 }
 
@@ -1163,6 +1317,8 @@ function getSheet_(name) {
       sh.appendRow(['userId', 'trophyId', 'earnedAt', 'displayName']);
     } else if (name === SHEET_GOALS) {
       sh.appendRow(['userId', 'weeklyGoal', 'public', 'updatedAt']);
+    } else if (name === SHEET_FEST_PARTICIPANTS) {
+      sh.appendRow(['weekKey', 'userId', 'displayName', 'joinedAt']);
     }
   }
   return sh;
@@ -1272,6 +1428,27 @@ function setupWeeklyTrigger() {
   Logger.log('毎週日曜21:45頃の自動投稿トリガーを設定しました');
 }
 
+/** 手動実行用: フェス開始の告知を送る。準備ができたタイミングで1回だけ実行する */
+function sendFestKickoff_() {
+  var shots = getShots_();
+  var memberMap = {};
+  getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+  uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
+  var range = festDateRange_();
+  var text = '🎉 ' + FEST_NAME + ' 開催中！(' + range.monday + '〜' + range.sunday + ')\n\n'
+    + 'チームみんなのシュート本数を合計して、目標達成を目指します🏀\n'
+    + '🥉1段階目 ' + FEST_TIERS[0] + '本\n'
+    + '🥈2段階目 ' + FEST_TIERS[1] + '本\n'
+    + '🥇3段階目 ' + FEST_TIERS[2] + '本\n\n'
+    + '早く3段階目まで届けば、日曜日に特別な追加ミッションが解禁されます！\n'
+    + 'アプリを開けば今の進み具合が見られます。みんなでシュートしまくろう🔥';
+  var targets = broadcastTargets_(memberMap, null);
+  var failed = [];
+  targets.forEach(function (uid) { if (!pushLineMessageTo_(uid, text)) failed.push(memberMap[uid]); });
+  if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
+  Logger.log(FEST_NAME + '告知を' + targets.length + '人に送信しました');
+}
+
 // 今週(月曜〜今日)のシュート本数ランキングを、メンバー1人ずつに個別メッセージで送る。
 // (グループ投稿ではなく個別チャットに送ることで、各自のトーク履歴の上位に来るようにする)
 // 確率は含めない(本数だけなら誰でも上位を狙える)。今週の記録がなければ何もしない。
@@ -1300,6 +1477,29 @@ function actionGetWeeklyRanking_(body) {
   return { weekStart: r.weekStart, today: r.today, teamTotal: r.teamTotal, ranked: r.ranked };
 }
 
+// フェス最終日(日曜)の場合のみ、週間ランキングDMに結果を統合するための文面ブロックを作る。
+// 通数節約のため専用の配信は行わず、既存の週間DMに載せる形にする。
+function festFinalMessageBlock_(shots) {
+  if (!FEST_ENABLED) return null;
+  var range = festDateRange_();
+  if (dateOf_(new Date()) !== range.sunday) return null;
+  var status = getFestStatus_(null, shots);
+  var lines = ['', '🎉 ' + FEST_NAME + ' 最終結果', '合計: ' + status.displayTotal + '本(' + status.tierReached + '/' + FEST_TIERS.length + '段階達成)'];
+  if (status.tierReached >= FEST_TIERS.length) {
+    lines.push('全段階達成、お疲れさまでした🏆');
+    var participants = festExtraParticipants_();
+    if (participants.length) {
+      var target = participants.length * FEST_EXTRA_PER_PERSON;
+      lines.push('エクストラミッション: ' + participants.length + '人参加(目標' + target + '本)');
+    }
+  } else if (status.multiplierApplied) {
+    lines.push('本日は2倍デーで後押ししました！また次回挑戦しましょう');
+  } else {
+    lines.push('また次回のフェスもお楽しみに！');
+  }
+  return lines.join('\n');
+}
+
 function weeklyMvpPost() {
   var shots = getShots_();
   var r = computeWeeklyRanking_(shots);
@@ -1315,6 +1515,8 @@ function weeklyMvpPost() {
   } else {
     rankingLines.push('今週はまだ誰も記録していません');
   }
+  var festBlock = festFinalMessageBlock_(shots);
+  if (festBlock) rankingLines.push(festBlock);
   var rankingText = rankingLines.join('\n');
   var attemptsByUser = {};
   ranked.forEach(function (u) { attemptsByUser[u.userId] = u.attempts; });
@@ -1327,7 +1529,7 @@ function weeklyMvpPost() {
   var memberMap = {};
   getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
   uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; }); // アプリの表示名の方が新しい可能性が高いので優先
-  var allMembers = Object.keys(memberMap).map(function (uid) { return { userId: uid, name: memberMap[uid] }; });
+  var allMembers = broadcastTargets_(memberMap, null).map(function (uid) { return { userId: uid, name: memberMap[uid] }; });
   var failed = [];
   allMembers.forEach(function (m) {
     var myAttempts = attemptsByUser[m.userId] || 0;
