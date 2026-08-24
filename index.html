@@ -1978,7 +1978,7 @@ function renderMyRankWithTop(hostId, summary){
   function fmt(e){ return e.makes+'/'+e.attempts+' 本 ・ <b class="pct">'+e.pct+'%</b>'; }
   var html = '';
   if(summary.mine){
-    html += '<div class="row"><span class="grow">あなたの順位</span><span class="pill" style="font-size:14px">'+summary.mine.rank+' 位 / '+summary.mine.total+'人中</span></div>'
+    html += '<div class="row"><span class="grow">あなたの順位</span><span class="pill" style="font-size:14px">'+summary.mine.rank+' 位</span></div>'
       + '<div class="muted" style="margin-top:8px">'+fmt(summary.mine)+'</div>';
   }else{
     html += '<div class="muted">この期間の記録はまだありません</div>';
