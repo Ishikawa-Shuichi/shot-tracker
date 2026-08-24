@@ -1547,11 +1547,10 @@ function weeklyMvpPost() {
   var allMembers = broadcastTargets_(memberMap, null).map(function (uid) { return { userId: uid, name: memberMap[uid] }; });
   var failed = [];
   allMembers.forEach(function (m) {
+    // 0本の人には個人本数に触れない(送る目的はトーク履歴を上げることなので、それ以外は言及しない)
     var myAttempts = attemptsByUser[m.userId] || 0;
-    var personal = myAttempts > 0
-      ? 'あなたは今週 ' + myAttempts + '本 シュートを打ちました！'
-      : '今週はまだ記録がありません。少しでも練習したら記録してみましょう🏀';
-    var text = rankingText + '\n\n' + personal + '\n今週もお疲れさまでした！🏀';
+    var personal = myAttempts > 0 ? 'あなたは今週 ' + myAttempts + '本 シュートを打ちました！\n' : '';
+    var text = rankingText + '\n\n' + personal + '今週もお疲れさまでした！🏀';
     if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
   });
   if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));

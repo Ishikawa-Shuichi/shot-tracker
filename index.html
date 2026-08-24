@@ -85,14 +85,29 @@
      専用アニメーションでtranslateX(-50%)を毎ステップ保持する */
   @keyframes festTrianglePop{0%{transform:translateX(-50%) scale(.3); opacity:.4} 55%{transform:translateX(-50%) scale(1.7);} 100%{transform:translateX(-50%) scale(1); opacity:1}}
   .fest-triangle-pop{animation:festTrianglePop .7s cubic-bezier(.2,1.5,.4,1) both;}
-  /* フェスメーターが3段階目を突き破る瞬間の破片バースト(ガチマッチのランクアップ演出を参考) */
-  .fest-shard{position:absolute; left:0; top:0; width:6px; height:6px; border-radius:1px; background:#f5c518; opacity:0;}
-  @keyframes festShard{0%{opacity:1; transform:rotate(var(--ang)) translateX(2px) scale(1);} 100%{opacity:0; transform:rotate(var(--ang)) translateX(30px) scale(.3);}}
-  .fest-burst-active .fest-shard{animation:festShard .8s ease-out both;}
-  .fest-burst-active .fest-shard:nth-child(2){animation-delay:.05s;}
-  .fest-burst-active .fest-shard:nth-child(3){animation-delay:.1s;}
-  .fest-burst-active .fest-shard:nth-child(4){animation-delay:.05s;}
-  .fest-burst-active .fest-shard:nth-child(5){animation-delay:0s;}
+  /* フェスメーターが3段階目を突き破る瞬間の演出(ガチマッチのランクアップを参考)。
+     ヒビが一瞬走り、メーター全体が軽く揺れ、右端から虹色の光が突き破って広がる。 */
+  .fest-crack{position:absolute; height:2px; background:#fff; opacity:0; box-shadow:0 0 4px #fff;}
+  @keyframes festCrackFlash{0%{opacity:0} 12%{opacity:1} 30%{opacity:.9} 55%{opacity:0} 100%{opacity:0}}
+  .fest-burst-active .fest-crack{animation:festCrackFlash .5s ease-out both;}
+  .fest-burst-active .fest-crack:nth-child(2){animation-delay:.04s;}
+  .fest-burst-active .fest-crack:nth-child(3){animation-delay:.08s;}
+
+  .fest-rainbow{position:absolute; right:-14px; top:50%; width:56px; height:56px; margin-top:-28px;
+    border-radius:50%; opacity:0; transform:scale(.15);
+    background:conic-gradient(from 0deg, #ff5b6e, #ffb020, #f5e050, #6be07a, #3aa0ff, #9b6bff, #ff5b6e);
+    filter:blur(.5px);}
+  @keyframes festRainbowBurst{
+    0%{opacity:0; transform:scale(.1) rotate(0deg);}
+    10%{opacity:0;}
+    30%{opacity:1; transform:scale(.85) rotate(60deg);}
+    100%{opacity:0; transform:scale(1.7) rotate(140deg);}
+  }
+  .fest-burst-active .fest-rainbow{animation:festRainbowBurst 1s cubic-bezier(.15,.7,.3,1) both;}
+
+  @keyframes festShake{0%,100%{transform:translateX(0)} 20%{transform:translateX(-3px)} 40%{transform:translateX(3px)} 60%{transform:translateX(-2px)} 80%{transform:translateX(2px)}}
+  .fest-burst-active{animation:festShake .4s ease-out both;}
+
   @keyframes festGlow{0%,100%{box-shadow:0 0 0 rgba(245,197,24,0)} 50%{box-shadow:0 0 14px rgba(245,197,24,.7)}}
   #festMeterTrack.fest-complete{animation:festGlow 1.8s ease-in-out infinite; border-color:#f5c518;}
 
@@ -143,10 +158,11 @@
           <div style="position:absolute; left:33.3%; top:-3px; bottom:-3px; width:2px; background:var(--bg);"></div>
           <div style="position:absolute; left:66.6%; top:-3px; bottom:-3px; width:2px; background:var(--bg);"></div>
           <div id="festMeterTriangle" style="position:absolute; top:-8px; left:0%; transform:translateX(-50%); width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:7px solid var(--fg); transition:left .6s cubic-bezier(.2,.8,.2,1);"></div>
-          <div id="festBurst" class="hidden" style="position:absolute; right:-2px; top:50%;">
-            <span class="fest-shard" style="--ang:-50deg"></span><span class="fest-shard" style="--ang:-25deg"></span>
-            <span class="fest-shard" style="--ang:0deg"></span><span class="fest-shard" style="--ang:25deg"></span>
-            <span class="fest-shard" style="--ang:50deg"></span>
+          <div id="festBurst" class="hidden" style="position:absolute; inset:0;">
+            <span class="fest-crack" style="right:22%; top:4px; width:16px; transform:rotate(25deg);"></span>
+            <span class="fest-crack" style="right:14%; top:12px; width:13px; transform:rotate(-30deg);"></span>
+            <span class="fest-crack" style="right:6%; top:8px; width:11px; transform:rotate(50deg);"></span>
+            <div class="fest-rainbow"></div>
           </div>
         </div>
         <div class="row" style="margin-top:5px; font-size:10px; color:var(--muted)">
@@ -1472,8 +1488,14 @@ function celebrateFestTier(tier){
   var triangle = document.getElementById('festMeterTriangle');
   if(triangle){ triangle.classList.remove('fest-triangle-pop'); void triangle.offsetWidth; triangle.classList.add('fest-triangle-pop'); }
   if(tier >= (state.fest && state.fest.tiers ? state.fest.tiers.length : 3)){
-    var burst = document.getElementById('festBurst');
-    if(burst){ burst.classList.remove('fest-burst-active'); void burst.offsetWidth; burst.classList.add('fest-burst-active'); }
+    // ヒビ+虹バーストは#festMeterTrack自体に掛ける(揺れも含めて全体を動かすため)。
+    // このクラスを外し忘れると、animationプロパティの上書きで.fest-completeの常時光彩が止まったままになるので、
+    // 一番長いサブアニメ(虹バースト1s)が終わったら確実に外す
+    var track = document.getElementById('festMeterTrack');
+    if(track){
+      track.classList.remove('fest-burst-active'); void track.offsetWidth; track.classList.add('fest-burst-active');
+      setTimeout(function(){ track.classList.remove('fest-burst-active'); }, 1000);
+    }
   }
 }
 
