@@ -1429,7 +1429,7 @@ function setupWeeklyTrigger() {
 }
 
 /** 手動実行用: フェス開始の告知を送る。準備ができたタイミングで1回だけ実行する */
-function sendFestKickoff_() {
+function sendFestKickoff() {
   var shots = getShots_();
   var memberMap = {};
   getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
