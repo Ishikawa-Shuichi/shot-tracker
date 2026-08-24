@@ -1440,7 +1440,6 @@ function sendFestKickoff_() {
     + '🥉1段階目 ' + FEST_TIERS[0] + '本\n'
     + '🥈2段階目 ' + FEST_TIERS[1] + '本\n'
     + '🥇3段階目 ' + FEST_TIERS[2] + '本\n\n'
-    + '早く3段階目まで届けば、日曜日に特別な追加ミッションが解禁されます！\n'
     + 'アプリを開けば今の進み具合が見られます。みんなでシュートしまくろう🔥';
   var targets = broadcastTargets_(memberMap, null);
   var failed = [];
@@ -1479,6 +1478,21 @@ function actionGetWeeklyRanking_(body) {
 
 // フェス最終日(日曜)の場合のみ、週間ランキングDMに結果を統合するための文面ブロックを作る。
 // 通数節約のため専用の配信は行わず、既存の週間DMに載せる形にする。
+// この週の合計(displayTotal)が、過去の全週(この週自身を除く)の実績を上回っているか。
+// 目標未達でも「チーム合計は過去最高だった」と胸を張って言えるかどうかの判定に使う。
+function festIsRecordWeek_(shots, thisWeekTotal) {
+  var range = festDateRange_();
+  var byWeek = {};
+  shots.forEach(function (s) {
+    var wk = weekKeyOf_(s.date);
+    if (wk === range.monday) return; // 今週自身は比較対象から除く
+    byWeek[wk] = (byWeek[wk] || 0) + s.attempts;
+  });
+  var maxPrior = 0;
+  Object.keys(byWeek).forEach(function (wk) { if (byWeek[wk] > maxPrior) maxPrior = byWeek[wk]; });
+  return thisWeekTotal > maxPrior;
+}
+
 function festFinalMessageBlock_(shots) {
   if (!FEST_ENABLED) return null;
   var range = festDateRange_();
@@ -1486,16 +1500,17 @@ function festFinalMessageBlock_(shots) {
   var status = getFestStatus_(null, shots);
   var lines = ['', '🎉 ' + FEST_NAME + ' 最終結果', '合計: ' + status.displayTotal + '本(' + status.tierReached + '/' + FEST_TIERS.length + '段階達成)'];
   if (status.tierReached >= FEST_TIERS.length) {
+    // 2倍デーの後押しで届いた場合も、仕組みの説明はせず素直に祝う
     lines.push('全段階達成、お疲れさまでした🏆');
     var participants = festExtraParticipants_();
     if (participants.length) {
       var target = participants.length * FEST_EXTRA_PER_PERSON;
       lines.push('エクストラミッション: ' + participants.length + '人参加(目標' + target + '本)');
     }
-  } else if (status.multiplierApplied) {
-    lines.push('本日は2倍デーで後押ししました！また次回挑戦しましょう');
+  } else if (festIsRecordWeek_(shots, status.displayTotal)) {
+    lines.push('目標には届きませんでしたが、このチーム合計はこれまでで一番の記録です！お疲れさまでした🎉');
   } else {
-    lines.push('また次回のフェスもお楽しみに！');
+    lines.push('お疲れさまでした！');
   }
   return lines.join('\n');
 }

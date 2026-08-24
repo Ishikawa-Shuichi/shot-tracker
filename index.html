@@ -81,6 +81,21 @@
   @keyframes revealFade{from{opacity:0; transform:scale(.94)} to{opacity:1; transform:scale(1)}}
   .reveal-fade{animation:revealFade .3s ease both;}
 
+  /* 三角マーカーはtranslateX(-50%)で中心合わせしているため、unlock-popのtransform上書きだと位置がズレる。
+     専用アニメーションでtranslateX(-50%)を毎ステップ保持する */
+  @keyframes festTrianglePop{0%{transform:translateX(-50%) scale(.3); opacity:.4} 55%{transform:translateX(-50%) scale(1.7);} 100%{transform:translateX(-50%) scale(1); opacity:1}}
+  .fest-triangle-pop{animation:festTrianglePop .7s cubic-bezier(.2,1.5,.4,1) both;}
+  /* フェスメーターが3段階目を突き破る瞬間の破片バースト(ガチマッチのランクアップ演出を参考) */
+  .fest-shard{position:absolute; left:0; top:0; width:6px; height:6px; border-radius:1px; background:#f5c518; opacity:0;}
+  @keyframes festShard{0%{opacity:1; transform:rotate(var(--ang)) translateX(2px) scale(1);} 100%{opacity:0; transform:rotate(var(--ang)) translateX(30px) scale(.3);}}
+  .fest-burst-active .fest-shard{animation:festShard .8s ease-out both;}
+  .fest-burst-active .fest-shard:nth-child(2){animation-delay:.05s;}
+  .fest-burst-active .fest-shard:nth-child(3){animation-delay:.1s;}
+  .fest-burst-active .fest-shard:nth-child(4){animation-delay:.05s;}
+  .fest-burst-active .fest-shard:nth-child(5){animation-delay:0s;}
+  @keyframes festGlow{0%,100%{box-shadow:0 0 0 rgba(245,197,24,0)} 50%{box-shadow:0 0 14px rgba(245,197,24,.7)}}
+  #festMeterTrack.fest-complete{animation:festGlow 1.8s ease-in-out infinite; border-color:#f5c518;}
+
   table{width:100%; border-collapse:collapse; font-size:13px;}
   th,td{padding:7px 6px; border-bottom:1px solid var(--line); text-align:right;}
   th:first-child,td:first-child{text-align:left;}
@@ -119,14 +134,30 @@
     <div class="card hidden" id="festCard" style="border-color:var(--accent)">
       <div class="row"><b class="grow" id="festTitle">🎉 シュートフェス</b><span class="pill" id="festTierBadge"></span></div>
       <div class="muted" style="font-size:12px; margin-top:2px" id="festSub"></div>
-      <div id="festMeter" style="margin-top:10px; border-radius:12px; overflow:hidden; position:relative; height:110px; background:linear-gradient(to top, #6b4a2a 0%, #4a7c3f 8%, #3aa0ff 40%, #1c3a6e 72%, #0a0f2e 100%);">
-        <div id="festMeterMarker" style="position:absolute; left:50%; transform:translate(-50%,50%); font-size:24px; bottom:0%; transition:bottom .6s ease; filter:drop-shadow(0 0 4px rgba(0,0,0,.6));">🚀</div>
-        <div style="position:absolute; left:6px; right:6px; bottom:33.3%; border-top:1px dashed rgba(255,255,255,.35); font-size:10px; color:#fff; padding-top:2px;">🥉<span id="festTier1Label"></span></div>
-        <div style="position:absolute; left:6px; right:6px; bottom:66.6%; border-top:1px dashed rgba(255,255,255,.35); font-size:10px; color:#fff; padding-top:2px;">🥈<span id="festTier2Label"></span></div>
-        <div style="position:absolute; left:6px; right:6px; top:2px; font-size:10px; color:#fff;">🥇<span id="festTier3Label"></span></div>
+      <div id="festMeterWrap" style="margin-top:18px; padding:0 6px;">
+        <div id="festMeterTrack" style="position:relative; height:20px; border-radius:10px; background:var(--card2); border:1px solid var(--line);">
+          <div style="position:absolute; inset:0; border-radius:9px; overflow:hidden;">
+            <div style="position:absolute; inset:0; background:linear-gradient(to right, #c9822f 0%, #c9822f 33.3%, #b9c3cf 33.3%, #b9c3cf 66.6%, #f5c518 66.6%, #f5c518 100%);"></div>
+            <div id="festMeterMask" style="position:absolute; top:0; bottom:0; right:0; width:100%; background:var(--card2); transition:width .6s cubic-bezier(.2,.8,.2,1);"></div>
+          </div>
+          <div style="position:absolute; left:33.3%; top:-3px; bottom:-3px; width:2px; background:var(--bg);"></div>
+          <div style="position:absolute; left:66.6%; top:-3px; bottom:-3px; width:2px; background:var(--bg);"></div>
+          <div id="festMeterTriangle" style="position:absolute; top:-8px; left:0%; transform:translateX(-50%); width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:7px solid var(--fg); transition:left .6s cubic-bezier(.2,.8,.2,1);"></div>
+          <div id="festBurst" class="hidden" style="position:absolute; right:-2px; top:50%;">
+            <span class="fest-shard" style="--ang:-50deg"></span><span class="fest-shard" style="--ang:-25deg"></span>
+            <span class="fest-shard" style="--ang:0deg"></span><span class="fest-shard" style="--ang:25deg"></span>
+            <span class="fest-shard" style="--ang:50deg"></span>
+          </div>
+        </div>
+        <div class="row" style="margin-top:5px; font-size:10px; color:var(--muted)">
+          <span class="grow">0</span>
+          <span class="grow" style="text-align:center">🥉<span id="festTier1Label"></span></span>
+          <span class="grow" style="text-align:center">🥈<span id="festTier2Label"></span></span>
+          <span style="text-align:right">🥇<span id="festTier3Label"></span></span>
+        </div>
       </div>
-      <div class="row" style="margin-top:8px">
-        <span class="muted" style="font-size:12px" id="festTotalText"></span>
+      <div class="row" style="margin-top:10px">
+        <span class="muted grow" style="font-size:12px" id="festTotalText"></span>
         <span class="muted" style="font-size:12px" id="festMineText"></span>
       </div>
       <div class="hidden" id="festDoubleBanner" style="margin-top:10px; padding:8px; border-radius:10px; background:var(--card2); text-align:center; font-weight:700; color:var(--accent)">🔥 本日は2倍デー！今打った本数が2倍でチーム目標に加算されます</div>
@@ -1396,12 +1427,16 @@ function renderFestCard(fest){
   card.classList.remove('hidden');
   document.getElementById('festTitle').textContent = '🎉 ' + fest.name;
   document.getElementById('festTierBadge').textContent = fest.tierReached + '/' + fest.tiers.length + '段階';
-  document.getElementById('festTier1Label').textContent = fest.tiers[0] + '本';
-  document.getElementById('festTier2Label').textContent = fest.tiers[1] + '本';
-  document.getElementById('festTier3Label').textContent = fest.tiers[2] + '本';
+  document.getElementById('festTier1Label').textContent = fest.tiers[0];
+  document.getElementById('festTier2Label').textContent = fest.tiers[1];
+  document.getElementById('festTier3Label').textContent = fest.tiers[2];
   var top = fest.tiers[fest.tiers.length - 1];
-  var pct = Math.max(0, Math.min(100, Math.round(fest.displayTotal / top * 100)));
-  document.getElementById('festMeterMarker').style.bottom = pct + '%';
+  var pct = Math.max(0, Math.min(100, fest.displayTotal / top * 100));
+  // 未到達部分のマスクを右から狭める(=左からブロンズ→シルバー→ゴールドが露出していく)ことで満たす表現にする
+  document.getElementById('festMeterMask').style.width = (100 - pct) + '%';
+  document.getElementById('festMeterTriangle').style.left = pct + '%';
+  document.getElementById('festMeterTrack').classList.toggle('fest-complete', fest.tierReached >= fest.tiers.length);
+  document.getElementById('festBurst').classList.toggle('hidden', fest.tierReached < fest.tiers.length);
   document.getElementById('festTotalText').textContent = '合計 ' + fest.displayTotal + '本';
   document.getElementById('festMineText').textContent = 'あなたの貢献: ' + fest.myContribution + '本';
   document.getElementById('festSub').textContent = fest.isSunday ? '本日は最終日です' : (fest.range.monday + '〜' + fest.range.sunday);
@@ -1428,13 +1463,18 @@ onTap(document.getElementById('festJoinBtn'), async function(){
     toast('エクストラミッションに参加しました🎁');
   }catch(e){ toast('エラー: '+e.message); btn.disabled = false; }
 });
-// 1・2段階目はアプリ内だけで祝う(3段階目はLINE通知も飛ぶので、ここでは軽めの演出にする)
+// 1・2段階目はアプリ内だけで祝う(3段階目はLINE通知も飛ぶので、ここでは軽めの演出にする)。
+// 3段階目(最終)はメーターを突き破る破片バーストで、1・2段階目は三角マーカーのポップだけにする
 function celebrateFestTier(tier){
   playUnlockSound();
   try{ if(navigator.vibrate) navigator.vibrate([60,50,60,50,150]); }catch(e){}
   toast('🎉 フェス' + tier + '段階目、達成！');
-  var marker = document.getElementById('festMeterMarker');
-  if(marker){ marker.classList.remove('unlock-pop'); void marker.offsetWidth; marker.classList.add('unlock-pop'); }
+  var triangle = document.getElementById('festMeterTriangle');
+  if(triangle){ triangle.classList.remove('fest-triangle-pop'); void triangle.offsetWidth; triangle.classList.add('fest-triangle-pop'); }
+  if(tier >= (state.fest && state.fest.tiers ? state.fest.tiers.length : 3)){
+    var burst = document.getElementById('festBurst');
+    if(burst){ burst.classList.remove('fest-burst-active'); void burst.offsetWidth; burst.classList.add('fest-burst-active'); }
+  }
 }
 
 // ================= 週目標(本数・デフォルト非公開) =================
