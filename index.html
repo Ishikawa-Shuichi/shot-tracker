@@ -2126,6 +2126,12 @@ function renderTeamUser(userId){
   var spotName = {}; var spotScope = {};
   d.spots.forEach(function(sp){ spotName[sp.spotId]=sp.name; spotScope[sp.spotId]=sp.scope; });
   var html = '<div class="row"><b class="grow">'+esc(u.name)+'</b><span class="pill">合計 '+u.total.makes+'/'+u.total.attempts+' ('+u.total.pct+'%)</span></div>';
+  if(u.live && u.live.attempts > 0){
+    html += '<div class="row" style="margin-top:8px; padding:8px; border-radius:8px; background:var(--card2)">'
+      + '<span class="grow">🔥 ライブ全体</span>'
+      + '<span class="muted" style="margin-right:8px">'+u.live.makes+'/'+u.live.attempts+'</span>'
+      + '<b class="pct">'+u.live.pct+'%</b></div>';
+  }
   u.spots.forEach(function(s){
     // 個人スポットは記録がある行だけ表示(全員分の個人スポットで0/0の行が並ばないように)
     if(spotScope[s.spotId]==='personal' && !(s.attempts>0)) return;
