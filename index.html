@@ -252,8 +252,8 @@
         <div class="row"><b class="grow">スタッツ</b><span class="pill" id="myTotal"></span></div>
         <div id="myStats"></div>
       </div>
-      <div class="card hidden" id="mySituationsCard">
-        <div class="row"><b class="grow">シチュエーション別</b></div>
+      <div class="card hidden" id="mySituationsCard" style="border-color:var(--accent2)">
+        <div class="row"><b class="grow">🔥 ライブシューティング</b></div>
         <div id="mySituations"></div>
       </div>
     </div>
@@ -312,6 +312,12 @@
       </div>
       <!-- 非ホスト: 自分の順位だけ -->
       <div id="teamMeOnly" class="hidden">
+        <!-- ライブ解放者だけに存在する欄(未解放の人にはサーバーがデータ自体を返さない) -->
+        <div class="card hidden" id="myLiveRankCard" style="border-color:var(--accent2)">
+          <b>🔥 ライブシューティング確率ランキング</b>
+          <div class="muted" style="margin:6px 0">全シチュエーション合計</div>
+          <div id="myLiveRankBody"></div>
+        </div>
         <div class="card">
           <b>シュート本数ランキング</b>
           <div class="muted" style="margin:6px 0">合計試投数(共通+マイスポット)</div>
@@ -334,6 +340,11 @@
       </div>
       <!-- ホスト: 全員分 -->
       <div id="teamHostView" class="hidden">
+        <div class="card hidden" id="teamLiveCard" style="border-color:var(--accent2)">
+          <b>🔥 ライブシューティング確率ランキング</b>
+          <div class="muted" style="margin:6px 0">全シチュエーション合計</div>
+          <div id="teamLiveBody"></div>
+        </div>
         <div class="card">
           <b>シュート本数ランキング</b>
           <div class="muted" style="margin:6px 0">合計試投数(共通+マイスポット)</div>
@@ -1841,22 +1852,30 @@ function renderMyStatsView(stats){
       +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
     host.appendChild(div);
   });
-  // シチュエーション別内訳(記録があるときだけカードを出す。指定なしのみの場合も隠して普段の画面をシンプルに保つ)
-  var sits = (stats.situations || []).filter(function(s){ return s.attempts > 0; });
-  var showSits = sits.length > 1 || (sits.length === 1 && sits[0].key !== '');
+  // ライブシューティングの成績(ライブの記録があるときだけカードを出す=未解放の人にはカード自体を見せない)。
+  // スポットの確率とは混ぜず、このカード内で全体+シチュエーション別の確率と成長を見られるようにする
+  var liveSits = (stats.situations || []).filter(function(s){ return s.attempts > 0 && s.key !== ''; });
   var sitCard = document.getElementById('mySituationsCard');
   if(sitCard){
-    sitCard.classList.toggle('hidden', !showSits);
+    sitCard.classList.toggle('hidden', !liveSits.length);
     var sitHost = document.getElementById('mySituations'); sitHost.innerHTML='';
-    if(showSits) sits.forEach(function(s){
-      var div=document.createElement('div'); div.style.margin='10px 0';
-      div.innerHTML =
-        '<div class="row"><span class="grow">'+esc(s.name)+'</span>'
-        +'<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
-        +'<b class="pct">'+s.pct+'%</b></div>'
-        +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
-      sitHost.appendChild(div);
-    });
+    if(liveSits.length){
+      var rows = liveSits.slice();
+      if(liveSits.length > 1){
+        var lm=0, la=0;
+        liveSits.forEach(function(s){ lm+=s.makes; la+=s.attempts; });
+        rows.unshift({ name:'ライブ全体', makes:lm, attempts:la, pct: la>0 ? Math.round(lm/la*1000)/10 : 0 });
+      }
+      rows.forEach(function(s){
+        var div=document.createElement('div'); div.style.margin='10px 0';
+        div.innerHTML =
+          '<div class="row"><span class="grow">'+esc(s.name)+'</span>'
+          +'<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
+          +'<b class="pct">'+s.pct+'%</b></div>'
+          +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
+        sitHost.appendChild(div);
+      });
+    }
   }
 }
 async function loadMyStats(){
@@ -1997,6 +2016,10 @@ async function loadTeam(){
     renderPctRankTable('teamTotalPctBody', state.teamData.threePointRanking);
     document.getElementById('teamFtHint').textContent = state.teamData.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
     renderPctRankTable('teamFtBody', state.teamData.freeThrowRanking);
+    // ライブ記録が1件でもあれば表示(ホストは常に全体を見られる)
+    var liveRanking = state.teamData.liveRanking || [];
+    document.getElementById('teamLiveCard').classList.toggle('hidden', !liveRanking.length);
+    renderPctRankTable('teamLiveBody', liveRanking);
   }else{
     var spotId = document.getElementById('teamSpotSelMe').value;
     var d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
@@ -2009,6 +2032,9 @@ async function loadTeam(){
     renderMyRankWithTop('myTotalPctRankBody', d.threePointRank);
     document.getElementById('myFtHint').textContent = d.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
     renderMyRankWithTop('myFtRankBody', d.freeThrowRank);
+    // ライブは解放者にだけ欄ごと出す(liveRankはサーバーが解放者にしか返さない)
+    document.getElementById('myLiveRankCard').classList.toggle('hidden', !d.liveRank);
+    if(d.liveRank) renderMyRankWithTop('myLiveRankBody', d.liveRank);
   }
 }
 function renderPctRankTable(hostId, rows){

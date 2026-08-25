@@ -486,6 +486,11 @@ function actionGetTeamStats_(body) {
     ? allUsers.filter(function (u) { return attemptsOf_(u, ftId) > 0; }).sort(function (a, b) { return pctOf_(b, ftId) - pctOf_(a, ftId); })
     : [];
 
+  // ライブシューティング確率(全シチュエーション合計)。スポットの確率とは混ぜず専用ランキングにする
+  var liveRanked = allUsers.filter(function (u) { return u.live && u.live.attempts > 0; })
+    .sort(function (a, b) { return b.live.pct - a.live.pct; });
+  function liveExtraOf_(u) { return { makes: u.live.makes, attempts: u.live.attempts, pct: u.live.pct }; }
+
   if (isHost) {
     var spotsMetaAll = allSpots.map(function (s) { return { spotId: s.id, name: s.name, scope: s.scope, ownerId: s.ownerId }; });
     return {
@@ -504,6 +509,10 @@ function actionGetTeamStats_(body) {
       freeThrowRanking: ftRanked.map(function (u) {
         var s = spotStatOf_(u, ftId);
         return { userId: u.userId, name: u.name, makes: s.makes, attempts: s.attempts, pct: s.pct };
+      }),
+      liveRanking: liveRanked.map(function (u) {
+        var l = liveExtraOf_(u);
+        return { userId: u.userId, name: u.name, makes: l.makes, attempts: l.attempts, pct: l.pct };
       })
     };
   }
@@ -530,8 +539,19 @@ function actionGetTeamStats_(body) {
     freeThrowRank: freeThrowSpot ? rankSummary_(ftRanked, requestUserId, function (u) {
       var s = spotStatOf_(u, ftId);
       return { makes: s.makes, attempts: s.attempts, pct: s.pct };
-    }) : { mine: null, top: null }
+    }) : { mine: null, top: null },
+    // ライブは隠し要素なので、一度でも解放したことがある人にだけランキング欄ごと返す
+    // (未解放の人には欄の存在も見せない。通信内容にも含めない)
+    liveRank: hasEverUnlockedLive_(allShotsForStreak, requestUserId, allSpots)
+      ? rankSummary_(liveRanked, requestUserId, liveExtraOf_)
+      : null
   };
+}
+
+// その人がライブシューティングをどこかのスポットで一度でも解放したことがあるか
+function hasEverUnlockedLive_(shots, userId, spots) {
+  var status = computeLiveStatus_(shots, userId, spots);
+  return Object.keys(status).some(function (k) { return status[k].ever; });
 }
 
 function actionGetTrend_(body) {
@@ -1248,12 +1268,13 @@ function getTeamAggregate_(ym) {
   var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
   shots.forEach(function (s) {
     if (ym && s.ym !== ym) return;
-    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0 });
+    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0, lm: 0, la: 0 });
     u.name = s.displayName || u.name; // 最新表示名で上書き
     u.taAll += s.attempts; // 本数ランキング用: 個人スポット分もライブ分もすべて合算する(打った本数は打った本数)
-    // 確率系の集計はスポットシューティング(シチュエーション指定なし)のみ。
-    // ライブは難易度が高く、混ぜると確率が下がって「確率を守るためにライブを打たない」動機になってしまうため
-    if (s.situation) return;
+    // スポットの確率集計はスポットシューティング(シチュエーション指定なし)のみ。
+    // ライブは難易度が高く、混ぜると確率が下がって「確率を守るためにライブを打たない」動機になってしまうため、
+    // スポットとは混ぜずライブ専用の確率(ライブランキング用)として別枠で集計する
+    if (s.situation) { u.lm += s.makes; u.la += s.attempts; return; }
     var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
     // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
@@ -1276,7 +1297,8 @@ function getTeamAggregate_(ym) {
     return {
       userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll,
       total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) },
-      threePoint: { makes: tpm, attempts: tpa, pct: pct_(tpm, tpa) }
+      threePoint: { makes: tpm, attempts: tpa, pct: pct_(tpm, tpa) },
+      live: { makes: u.lm, attempts: u.la, pct: pct_(u.lm, u.la) }
     };
   });
 
