@@ -121,6 +121,7 @@ function doPost(e) {
       case 'getWeeklyRanking': data = actionGetWeeklyRanking_(body); break;
       case 'setGoal':     data = actionSetGoal_(body); break;
       case 'getAllLicenses': data = actionGetAllLicenses_(body); break;
+      case 'registerMember': data = actionRegisterMember_(body); break;
       case 'getFestStatus': data = actionGetFestStatus_(body); break;
       case 'festParticipate': data = actionFestParticipate_(body); break;
       default:
@@ -159,10 +160,39 @@ function actionInit_(body) {
     trophyTotal: TROPHY_DEFS.length,
     myGoal: getMyGoal_(userId),
     // 仲間のライセンス閲覧(誰でも誰の分でも見られる)用の選択肢として、ホスト以外にも渡す
-    members: uniqueMembers_(shots),
+    members: allMembers_(shots),
     fest: getFestStatus_(userId, shots)
   };
   return result;
+}
+
+// 記録がある人 + ホストが作成したproxyメンバー(まだ記録が1本も無くても選択肢に出す)
+function allMembers_(shots) {
+  var members = uniqueMembers_(shots || getShots_());
+  var seen = {};
+  members.forEach(function (m) { seen[m.userId] = true; });
+  getKnownUsers_().forEach(function (m) {
+    if (m.userId.indexOf('proxy-') === 0 && !seen[m.userId]) { members.push(m); seen[m.userId] = true; }
+  });
+  return members;
+}
+
+// ホストが「スマホを持っていない人(兄弟で1台の親のスマホを使う小学生など)」の記録用アカウントを作る。
+// LINEアカウント不要のproxy-IDを発行し、KnownUsersシートに保存して永続化する。
+// 通知系の宛先は全てbroadcastTargets_でproxy-を除外しているため、このIDにDMが飛ぶことはない。
+function actionRegisterMember_(body) {
+  var userId = String(body.userId || '');
+  if (userId !== HOST_USER_ID) throw new Error('メンバーの作成はホストのみ可能です');
+  var name = String(body.name || '').trim();
+  if (!name) throw new Error('名前が空です');
+  // 同名の人が既にいれば新規作成せずその人を返す(同一人物の記録が別IDに分裂しないように)
+  var existing = allMembers_();
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].name === name) return { userId: existing[i].userId, name: existing[i].name };
+  }
+  var newId = 'proxy-' + Utilities.getUuid().slice(0, 8);
+  getSheet_('KnownUsers').appendRow([newId, name, new Date().toISOString()]);
+  return { userId: newId, name: name };
 }
 
 function actionAddSpot_(body) {
@@ -175,7 +205,10 @@ function actionAddSpot_(body) {
   var wantsShared = String(body.scope || 'personal') === 'shared';
   if (wantsShared && userId !== HOST_USER_ID) throw new Error('共通スポットの追加はホストのみ可能です');
   var scope = wantsShared ? 'shared' : 'personal';
-  var ownerId = scope === 'personal' ? userId : '';
+  // ホストは他人のマイページへも追加できる(代理記録中にその人専用スポットを作るため)
+  var ownerUserId = String(body.ownerUserId || '') || userId;
+  if (ownerUserId !== userId && userId !== HOST_USER_ID) throw new Error('他の人のマイページへの追加はホストのみ可能です');
+  var ownerId = scope === 'personal' ? ownerUserId : '';
 
   var sh = getSheet_(SHEET_SPOTS);
   var id = Utilities.getUuid();

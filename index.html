@@ -425,7 +425,7 @@
       <div id="spotListShared" style="margin-top:4px"></div>
     </div>
     <div class="card">
-      <b>マイページのスポット一覧</b>
+      <b id="personalListTitle">マイページのスポット一覧</b>
       <div id="spotListPersonal" style="margin-top:8px"></div>
     </div>
   </section>
@@ -559,9 +559,16 @@ function currentPageSpots(){
       : sp.scope !== 'personal';
   });
 }
-// 自分に関係するスポットだけ(共通+自分の個人)。推移セレクタや設定タブなど「自分視点」の画面で使う
+// 自分に関係するスポットだけ(共通+自分の個人)。推移セレクタなど「自分視点」の画面で使う
 function myVisibleSpots(){
   return state.spots.filter(function(sp){ return sp.scope !== 'personal' || sp.ownerId === state.user.userId; });
+}
+// 設定タブのスポット編集対象。ホストが代理記録中はその相手のマイページを編集できる(それ以外は常に自分)
+function editTargetId(){ return (state.isHost && state.recordingAs) ? state.recordingAs.userId : state.user.userId; }
+function editTargetName(){ return (state.isHost && state.recordingAs) ? state.recordingAs.name : null; }
+function editVisibleSpots(){
+  var t = editTargetId();
+  return state.spots.filter(function(sp){ return sp.scope !== 'personal' || sp.ownerId === t; });
 }
 
 // LINEアプリ内WebViewは、画面表示直後の1回目のタップが click として発火しない事があるため、
@@ -1004,8 +1011,8 @@ function renderEditCourt(){
   document.getElementById('editCourtSvg').innerHTML = courtSvgMarkup();
   var wrap = document.getElementById('editCourtWrap');
   Array.prototype.slice.call(wrap.querySelectorAll('.spot')).forEach(function(n){n.remove();});
-  // 既存スポットを薄く表示(自分に関係する分だけ。ホストでも他人の個人スポットまでは出さない)
-  myVisibleSpots().forEach(function(sp){
+  // 既存スポットを薄く表示(共通+いま編集対象の人の個人スポット)
+  editVisibleSpots().forEach(function(sp){
     var el=document.createElement('div'); el.className='spot small';
     el.style.left=sp.x+'%'; el.style.top=sp.y+'%'; el.style.opacity='.5';
     el.innerHTML='<div class="dot">•</div>';
@@ -2180,8 +2187,11 @@ document.getElementById('proxySel').addEventListener('change', async function(){
     // 同じ名前の人が既にいれば新規作成せずその人を選ぶ(同一人物の記録が別人として分裂しないように)
     var member = state.members.find(function(m){ return m.name === name; });
     if(!member){
-      member = { userId: 'proxy-' + Math.random().toString(36).slice(2,10), name: name };
-      state.members.push(member);
+      // サーバーに登録して永続化する(記録が0本のままアプリを閉じても消えないように)。
+      // 通信できない場合はローカル作成で続行し、最初の記録が保存された時点で永続化される。
+      try{ member = await api('registerMember', { userId: state.user.userId, name: name }); }
+      catch(e){ member = { userId: 'proxy-' + Math.random().toString(36).slice(2,10), name: name }; }
+      if(!state.members.some(function(m){ return m.userId === member.userId; })) state.members.push(member);
     }
     state.recordingAs = member;
     renderProxyUI();
@@ -2237,7 +2247,11 @@ function renderAddScopeUI(){
   var sharedBtn = document.getElementById('addScopeSharedBtn');
   sharedBtn.classList.toggle('hidden', !state.isHost);
   sharedBtn.classList.toggle('active', state.addScope==='shared');
-  document.getElementById('addScopePersonalBtn').classList.toggle('active', state.addScope==='personal');
+  var personalBtn = document.getElementById('addScopePersonalBtn');
+  personalBtn.classList.toggle('active', state.addScope==='personal');
+  // ホストが代理記録中は、追加先がその人のマイページであることをボタン自体に示す(誤って他人のページへ追加する事故防止)
+  var tn = editTargetName();
+  personalBtn.textContent = tn ? tn+'さんのページに追加' : 'マイページに追加';
 }
 onTap(document.getElementById('addScopeSharedBtn'), function(){ state.addScope='shared'; renderAddScopeUI(); });
 onTap(document.getElementById('addScopePersonalBtn'), function(){ state.addScope='personal'; renderAddScopeUI(); });
@@ -2249,7 +2263,7 @@ onTap(document.getElementById('addSpotBtn'), async function(){
   var pos = state.editPos || {x:50,y:80};
   try{
     btn.disabled=true;
-    var d = await api('addSpot', { name:name, x:pos.x, y:pos.y, userId: state.user.userId, scope: state.addScope });
+    var d = await api('addSpot', { name:name, x:pos.x, y:pos.y, userId: state.user.userId, scope: state.addScope, ownerUserId: editTargetId() });
     state.spots = d.spots; state.editPos=null;
     document.getElementById('newSpotName').value='';
     renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList();
@@ -2320,8 +2334,11 @@ function renderSpotList(){
     host.appendChild(el);
   }
   var shared = state.spots.filter(function(sp){ return sp.scope !== 'personal'; });
-  // 設定タブで編集できる個人スポットは自分の分だけ(ホストのstate.spotsには全員分が入っているため絞る)
-  var personal = state.spots.filter(function(sp){ return sp.scope === 'personal' && sp.ownerId === state.user.userId; });
+  // 個人スポットは「いま編集対象の人」の分だけ(ホストのstate.spotsには全員分が入っているため絞る)
+  var editTarget = editTargetId();
+  var personal = state.spots.filter(function(sp){ return sp.scope === 'personal' && sp.ownerId === editTarget; });
+  var tn = editTargetName();
+  document.getElementById('personalListTitle').textContent = tn ? tn+'さんのマイページのスポット一覧' : 'マイページのスポット一覧';
   if(!shared.length) sharedHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
   else shared.forEach(function(sp){ row(sp, sharedHost, state.isHost); });
   if(!personal.length) personalHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
@@ -2339,7 +2356,7 @@ document.querySelectorAll('nav button').forEach(function(b){
     });
     if(tab==='team'){ state.teamPage==='license' ? loadLicense() : loadTeam(); }
     if(tab==='trophy') renderTrophyTab();
-    if(tab==='settings'){ renderEditCourt(); renderSpotList(); }
+    if(tab==='settings'){ renderEditCourt(); renderSpotList(); renderAddScopeUI(); }
     if(tab==='my'){ state.myPage==='trend' ? loadTrend() : refreshMyTab(); }
   });
 });
