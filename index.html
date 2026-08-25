@@ -190,7 +190,7 @@
     </div>
     <div class="row" style="gap:8px; margin-top:12px">
       <button class="pagebtn active" id="pageSharedBtn">共通</button>
-      <button class="pagebtn" id="pagePersonalBtn">マイページ</button>
+      <button class="pagebtn" id="pagePersonalBtn">マイスポット</button>
     </div>
     <div class="card">
       <div class="muted" id="courtHint">スポットをタップして記録（この画面の集計は選択中の月）</div>
@@ -221,6 +221,9 @@
     <!-- ---- スタッツ サブページ ---- -->
     <div id="myPageStats">
       <div class="card">
+        <select id="myStatsWho" class="hidden" style="margin-bottom:8px">
+          <option value="me">自分</option>
+        </select>
         <div class="row" style="gap:8px">
           <button class="pagebtn active" id="myGranMonth">月</button>
           <button class="pagebtn" id="myGranWeek">週</button>
@@ -228,7 +231,7 @@
         </div>
         <input type="date" id="myPeriodDate" class="hidden" style="margin-top:8px"/>
       </div>
-      <div class="card">
+      <div class="card" id="myGoalCard">
         <div class="row"><b class="grow">週目標</b><button class="muted" id="goalEditBtn" style="font-size:12px">設定</button></div>
         <div id="goalView" class="hidden">
           <div class="row" style="margin-top:8px"><span class="muted" id="goalNums"></span><span class="pill" id="goalPct"></span></div>
@@ -307,7 +310,7 @@
       <div id="teamMeOnly" class="hidden">
         <div class="card">
           <b>シュート本数ランキング</b>
-          <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
+          <div class="muted" style="margin:6px 0">合計試投数(共通+マイスポット)</div>
           <div id="myCountRankBody"></div>
         </div>
         <div class="card">
@@ -329,7 +332,7 @@
       <div id="teamHostView" class="hidden">
         <div class="card">
           <b>シュート本数ランキング</b>
-          <div class="muted" style="margin:6px 0">合計試投数(共通+マイページ)</div>
+          <div class="muted" style="margin:6px 0">合計試投数(共通+マイスポット)</div>
           <div id="teamCountBody"></div>
         </div>
         <div class="card">
@@ -378,8 +381,8 @@
         <div style="margin-top:12px; line-height:1.8; font-size:13px">
           <b>記録する</b>
           <div class="muted">「記録」タブでコート上のスポットをタップ→試投数とメイク数を入力→保存。数字はボタンを押すか、長押しで連続で増減できます。</div>
-          <b style="display:block; margin-top:12px">共通とマイページ</b>
-          <div class="muted">「共通」はチーム全員で使うスポット。「マイページ」は自分専用のスポットで、設定タブから自由に追加できます。</div>
+          <b style="display:block; margin-top:12px">共通とマイスポット</b>
+          <div class="muted">「共通」はチーム全員で使うスポット。「マイスポット」は自分専用のスポットで、設定タブから自由に追加できます。</div>
           <b style="display:block; margin-top:12px">じぶんタブ</b>
           <div class="muted">自分のスタッツと、期間ごとの推移グラフが見られます。週の目標本数もここで設定できます(初期状態は非公開。公開にすると仲間のライセンスにも達成率が表示されます)。</div>
           <b style="display:block; margin-top:12px">チームタブ</b>
@@ -402,7 +405,7 @@
       <div class="muted" style="margin:6px 0">下のコートをタップして位置を決め、名前を入力</div>
       <div class="row" style="gap:8px; margin-bottom:10px" id="addScopeRow">
         <button class="pagebtn" id="addScopeSharedBtn">共通に追加</button>
-        <button class="pagebtn active" id="addScopePersonalBtn">マイページに追加</button>
+        <button class="pagebtn active" id="addScopePersonalBtn">マイスポットに追加</button>
       </div>
       <div class="row hidden" id="moveBanner" style="gap:8px; margin-bottom:10px; padding:10px; background:var(--card2); border-radius:10px;">
         <span class="grow muted" id="moveHint">移動中</span>
@@ -425,7 +428,7 @@
       <div id="spotListShared" style="margin-top:4px"></div>
     </div>
     <div class="card">
-      <b id="personalListTitle">マイページのスポット一覧</b>
+      <b id="personalListTitle">マイスポット一覧</b>
       <div id="spotListPersonal" style="margin-top:8px"></div>
     </div>
   </section>
@@ -530,7 +533,7 @@ var state = {
   members: [],        // ホスト用: これまでに記録があるメンバー一覧
   recordingAs: null,   // ホストの代理記録対象 {userId,name}。nullなら自分
   proxyStats: null,    // recordingAs で選んだ人の統計(ホストがコート上で確認できるように)
-  recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイページ)
+  recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイスポット)
   addScope: 'personal', // 設定タブでスポット追加する対象
   trendGranularity: 'month', // 推移サブページの粒度: 'day' | 'week' | 'month'
   myGranularity: 'month',    // スタッツサブページの粒度: 'day' | 'week' | 'month'
@@ -550,7 +553,7 @@ var state = {
 };
 
 function currentPageSpots(){
-  // マイページのスポットは「いま記録する対象者(通常は自分、代理記録中はその相手)」の個人スポットだけを出す。
+  // マイスポットは「いま記録する対象者(通常は自分、代理記録中はその相手)」の個人スポットだけを出す。
   // ホストのstate.spotsには全員分の個人スポットが入っているため、ownerIdで絞り込む必要がある。
   var targetId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
   return state.spots.filter(function(sp){
@@ -563,7 +566,7 @@ function currentPageSpots(){
 function myVisibleSpots(){
   return state.spots.filter(function(sp){ return sp.scope !== 'personal' || sp.ownerId === state.user.userId; });
 }
-// 設定タブのスポット編集対象。ホストが代理記録中はその相手のマイページを編集できる(それ以外は常に自分)
+// 設定タブのスポット編集対象。ホストが代理記録中はその相手のマイスポットを編集できる(それ以外は常に自分)
 function editTargetId(){ return (state.isHost && state.recordingAs) ? state.recordingAs.userId : state.user.userId; }
 function editTargetName(){ return (state.isHost && state.recordingAs) ? state.recordingAs.name : null; }
 function editVisibleSpots(){
@@ -836,6 +839,7 @@ function applyBootData(d, fromCache){
   renderAddScopeUI();
   renderSpotList();
   fillTrendWhoSelector();
+  fillMyStatsWhoSelector();
   // まだサーバーに送れていない記録(未送信キュー)の分を統計に上乗せし、見た目を実態に合わせる
   state.pendingShots.forEach(function(p){ applyOptimisticShot(p); });
 }
@@ -954,7 +958,7 @@ async function refreshAll(){
   if(active==='settings') renderSpotList();
 }
 
-// ================= 記録ページ切替(共通/マイページ) =================
+// ================= 記録ページ切替(共通/マイスポット) =================
 onTap(document.getElementById('pageSharedBtn'), function(){ setRecordPage('shared'); });
 onTap(document.getElementById('pagePersonalBtn'), function(){ setRecordPage('personal'); });
 function setRecordPage(page){
@@ -989,7 +993,7 @@ function renderCourt(){
   if(!pageSpots.length){
     var empty=document.createElement('div'); empty.className='muted center court-empty'; empty.style.padding='30px 0';
     empty.textContent = state.recordPage==='personal'
-      ? (state.recordingAs ? state.recordingAs.name+'さんの個人スポットはまだありません' : 'マイページのスポットはまだありません(設定タブから追加できます)')
+      ? (state.recordingAs ? state.recordingAs.name+'さんのスポットはまだありません' : 'マイスポットはまだありません(設定タブから追加できます)')
       : '共通スポットがありません';
     wrap.appendChild(empty);
   }
@@ -1850,8 +1854,33 @@ function renderMyStatsView(stats){
   }
 }
 async function loadMyStats(){
-  applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
+  var target = myStatsTargetId();
+  if(target){
+    // 他人の分を見るだけ(ホスト限定)。state.myStatsや演出判定には一切触れない
+    renderMyStatsView(await api('getMyStats', { userId: state.user.userId, targetUserId: target, ym: state.ym }));
+  }else{
+    applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
+  }
 }
+// じぶんタブのスタッツで表示する対象。null=自分、userId=ホストが選んだ他のメンバー
+function myStatsTargetId(){
+  var sel = document.getElementById('myStatsWho');
+  return (state.isHost && sel && sel.value && sel.value !== 'me') ? sel.value : null;
+}
+function fillMyStatsWhoSelector(){
+  var sel = document.getElementById('myStatsWho');
+  if(!sel) return;
+  sel.classList.toggle('hidden', !state.isHost);
+  var prev = sel.value;
+  sel.innerHTML = '<option value="me">自分</option>';
+  if(state.isHost){
+    state.members.filter(function(m){ return m.userId !== state.user.userId; }).forEach(function(m){
+      var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o);
+    });
+  }
+  if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
+}
+document.getElementById('myStatsWho').addEventListener('change', refreshMyTab);
 // じぶんタブのスタッツサブページ限定の週/日フィルタ(記録タブのコート表示や他タブには影響させない)
 onTap(document.getElementById('myGranMonth'), function(){ setMyGranularity('month'); });
 onTap(document.getElementById('myGranWeek'), function(){ setMyGranularity('week'); });
@@ -1869,9 +1898,15 @@ function setMyGranularity(g){
 }
 async function loadMyTabCustomStats(){
   var dateVal = document.getElementById('myPeriodDate').value || todayStr();
-  renderMyStatsView(await api('getMyStats', { userId: state.user.userId, granularity: state.myGranularity, period: dateVal }));
+  var payload = { userId: state.user.userId, granularity: state.myGranularity, period: dateVal };
+  var target = myStatsTargetId();
+  if(target) payload.targetUserId = target;
+  renderMyStatsView(await api('getMyStats', payload));
 }
 function refreshMyTab(){
+  // 他人の分を見ている間は自分の週目標カードを隠す(他人の目標は表示できず、自分の数字が混ざると誤解を生むため)
+  var goalCard = document.getElementById('myGoalCard');
+  if(goalCard) goalCard.classList.toggle('hidden', !!myStatsTargetId());
   if(state.myGranularity==='month'){ loadMyStats(); }
   else { loadMyTabCustomStats(); }
 }
@@ -2195,6 +2230,8 @@ document.getElementById('proxySel').addEventListener('change', async function(){
     }
     state.recordingAs = member;
     renderProxyUI();
+    fillTrendWhoSelector();
+    fillMyStatsWhoSelector();
     await refreshProxyStats();
     await loadHistory();
     renderCourt();
@@ -2249,9 +2286,9 @@ function renderAddScopeUI(){
   sharedBtn.classList.toggle('active', state.addScope==='shared');
   var personalBtn = document.getElementById('addScopePersonalBtn');
   personalBtn.classList.toggle('active', state.addScope==='personal');
-  // ホストが代理記録中は、追加先がその人のマイページであることをボタン自体に示す(誤って他人のページへ追加する事故防止)
+  // ホストが代理記録中は、追加先がその人のマイスポットであることをボタン自体に示す(誤って他人の分へ追加する事故防止)
   var tn = editTargetName();
-  personalBtn.textContent = tn ? tn+'さんのページに追加' : 'マイページに追加';
+  personalBtn.textContent = tn ? tn+'さんのスポットに追加' : 'マイスポットに追加';
 }
 onTap(document.getElementById('addScopeSharedBtn'), function(){ state.addScope='shared'; renderAddScopeUI(); });
 onTap(document.getElementById('addScopePersonalBtn'), function(){ state.addScope='personal'; renderAddScopeUI(); });
@@ -2338,7 +2375,7 @@ function renderSpotList(){
   var editTarget = editTargetId();
   var personal = state.spots.filter(function(sp){ return sp.scope === 'personal' && sp.ownerId === editTarget; });
   var tn = editTargetName();
-  document.getElementById('personalListTitle').textContent = tn ? tn+'さんのマイページのスポット一覧' : 'マイページのスポット一覧';
+  document.getElementById('personalListTitle').textContent = tn ? tn+'さんのスポット一覧' : 'マイスポット一覧';
   if(!shared.length) sharedHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
   else shared.forEach(function(sp){ row(sp, sharedHost, state.isHost); });
   if(!personal.length) personalHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';

@@ -140,7 +140,7 @@ function actionInit_(body) {
   var userId = String(body.userId || '');
   var ym = currentYm_();
   var isHost = !!userId && userId === HOST_USER_ID;
-  // ホストには全員分の個人スポットも渡す(代理記録時に相手のマイページスポットへ記録できるように)。
+  // ホストには全員分の個人スポットも渡す(代理記録時に相手のマイスポットへ記録できるように)。
   // クライアント側は ownerId を見て「いま記録している対象者の分」だけを表示する。
   var spots = isHost ? getSpots_(userId, true) : getSpots_(userId);
   // 自分の統計に他人の個人スポットが混ざらないよう、集計には自分に見える分だけを使う
@@ -205,9 +205,9 @@ function actionAddSpot_(body) {
   var wantsShared = String(body.scope || 'personal') === 'shared';
   if (wantsShared && userId !== HOST_USER_ID) throw new Error('共通スポットの追加はホストのみ可能です');
   var scope = wantsShared ? 'shared' : 'personal';
-  // ホストは他人のマイページへも追加できる(代理記録中にその人専用スポットを作るため)
+  // ホストは他人のマイスポットへも追加できる(代理記録中にその人専用スポットを作るため)
   var ownerUserId = String(body.ownerUserId || '') || userId;
-  if (ownerUserId !== userId && userId !== HOST_USER_ID) throw new Error('他の人のマイページへの追加はホストのみ可能です');
+  if (ownerUserId !== userId && userId !== HOST_USER_ID) throw new Error('他の人のマイスポットへの追加はホストのみ可能です');
   var ownerId = scope === 'personal' ? ownerUserId : '';
 
   var sh = getSheet_(SHEET_SPOTS);
@@ -468,7 +468,7 @@ function actionGetTeamStats_(body) {
   // 左右コーナー・ウイング・スロット・トップの7スポット合計で見るスリーポイントランキング
   var threePointRanked = allUsers.filter(function (u) { return u.threePoint.attempts > 0; })
     .sort(function (a, b) { return b.threePoint.pct - a.threePoint.pct; });
-  // 本数ランキングはマイページ(個人スポット)分も含めた総試投数
+  // 本数ランキングはマイスポット(個人スポット)分も含めた総試投数
   var countRanked = allUsers.filter(function (u) { return u.totalAttemptsAll > 0; })
     .sort(function (a, b) { return b.totalAttemptsAll - a.totalAttemptsAll; });
 
