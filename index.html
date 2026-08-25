@@ -754,8 +754,26 @@ function applyOptimisticShot(payload){
     t.makes += payload.makes; t.attempts += payload.attempts; t.pct = t.attempts>0 ? Math.round(t.makes/t.attempts*1000)/10 : 0;
     if(stats === state.myStats) renderMyStatsView(stats);
   }
+  applyOptimisticFest(payload);
   renderCourt();
   renderHistoryList();
+}
+// 記録した瞬間にフェスメーターも動かす。サーバー応答(数秒かかることがある)を待つと、
+// その頃には次のシューティングに移っていて「自分の1本が積み上がった」実感を取り逃すため。
+// 正しい値は応答時の applyFestStatus / 次回起動時のサーバー値で上書きされる。
+function applyOptimisticFest(payload){
+  var f = state.fest;
+  if(!f || !f.enabled || f.isOver) return;
+  if(payload.date < f.range.monday || payload.date > f.range.sunday) return; // フェス週の記録だけが対象
+  var add = payload.attempts;
+  // 日曜の2倍デーはサーバーと同じ条件(3段階目が未達のまま日曜を迎えた場合)でのみ効く
+  if(f.isSunday && f.tierReached < f.tiers.length) add *= 2;
+  f.rawTotal += payload.attempts;
+  f.displayTotal += add;
+  // 貢献は自分の記録だけ(ホストの代理記録は対象者の貢献であって自分の貢献ではない)
+  if(payload.userId === state.user.userId) f.myContribution += payload.attempts;
+  f.tierReached = f.tiers.filter(function(t){ return f.displayTotal >= t; }).length;
+  renderFestCard(f);
 }
 async function trySyncPending(){
   if(state.syncing || (!state.pendingShots.length && !state.pendingOps.length)) return;
@@ -1293,6 +1311,7 @@ onTap(document.getElementById('recSave'), async function(){
       toast('更新しました ✅');
       closeRecord();
       applyMyStats(res.myStats);
+      applyFestStatus(res.fest);
       if(res.streak != null) updateStreakBadge(res.streak);
       if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
       else{ applyHistory(res.history); }
@@ -1425,6 +1444,7 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
     closeRecord();
     toast('削除しました');
     applyMyStats(res.myStats);
+    applyFestStatus(res.fest);
     if(res.streak != null) updateStreakBadge(res.streak);
     if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
     else{ applyHistory(res.history); }

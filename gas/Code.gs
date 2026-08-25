@@ -336,7 +336,9 @@ function actionRecordShot_(body) {
     streak: computeStreak_(shots, actingUserId),
     newTrophies: newTrophies,
     trophyOwner: userId,
-    fest: getFestStatus_(userId, shots),
+    // フェスカードは「画面を操作している人」の視点で表示する(「あなたの貢献」が代理対象者の本数に
+    // 化けないように)。段階の判定・通知はチーム全体なので、この引数の違いには影響されない。
+    fest: getFestStatus_(actingUserId, shots),
     newFestTier: newFestTier
   };
 }
@@ -373,7 +375,8 @@ function actionUpdateShot_(body) {
       id: id,
       myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
       history: computeHistory_(spots, shots, actingUserId, 20),
-      streak: computeStreak_(shots, actingUserId)
+      streak: computeStreak_(shots, actingUserId),
+      fest: getFestStatus_(actingUserId, shots) // 本数を編集したらチーム合計も変わるため一緒に返す
     };
   }
   throw new Error('記録が見つかりません');
@@ -398,7 +401,8 @@ function actionDeleteShot_(body) {
       id: id,
       myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
       history: computeHistory_(spots, shots, actingUserId, 20),
-      streak: computeStreak_(shots, actingUserId)
+      streak: computeStreak_(shots, actingUserId),
+      fest: getFestStatus_(actingUserId, shots) // 記録を消したらチーム合計も減るため一緒に返す
     };
   }
   // 見つからない場合は「既に削除済み」(通信リトライによる二重実行など)とみなし、成功として最新の統計を返す
@@ -409,7 +413,8 @@ function actionDeleteShot_(body) {
     id: id, alreadyDeleted: true,
     myStats: computeMyStats_(spotsGone, shotsGone, actingUserId, 'month', viewYmGone),
     history: computeHistory_(spotsGone, shotsGone, actingUserId, 20),
-    streak: computeStreak_(shotsGone, actingUserId)
+    streak: computeStreak_(shotsGone, actingUserId),
+    fest: getFestStatus_(actingUserId, shotsGone)
   };
 }
 
