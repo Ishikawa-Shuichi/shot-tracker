@@ -433,15 +433,21 @@ function actionRenameUser_(body) {
 
 function actionGetMyStats_(body) {
   var requesterId = String(body.userId || '');
-  var targetUserId = String(body.targetUserId || '') || requesterId;
-  if (targetUserId !== requesterId && requesterId !== HOST_USER_ID) {
+  var isHost = requesterId === HOST_USER_ID;
+  var rawTarget = String(body.targetUserId || '');
+  var isTeam = rawTarget === '__team__';
+  if (isTeam && !isHost) throw new Error('この統計を見る権限がありません');
+  var targetUserId = isTeam ? '' : (rawTarget || requesterId);
+  if (!isTeam && targetUserId !== requesterId && !isHost) {
     throw new Error('この統計を見る権限がありません');
   }
   // granularity: 'month'(既定) | 'week' | 'day'。period が空なら全期間。
   // 後方互換のため period 未指定時は ym を使う。
   var granularity = String(body.granularity || 'month');
   var period = body.period != null ? (String(body.period) || null) : (String(body.ym || '') || null);
-  return computeMyStats_(getSpots_(targetUserId), getShots_(), targetUserId, granularity, period);
+  // チーム合算は共通スポットのみで集計する(個人ごとに違う名前のマイスポットは人をまたいで合算できないため)
+  var spots = isTeam ? getSpots_(null) : getSpots_(targetUserId);
+  return computeMyStats_(spots, getShots_(), targetUserId, granularity, period);
 }
 
 // ホスト以外は「自分の順位」だけ、ホストは全員分(個人スポット含む)を見られる。
@@ -1084,7 +1090,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
   var bySituation = {};
   var hasLive = false; // 期間に関係なく、ライブ記録を一度でも持っているか(推移タブのライブ切替の表示判定用)
   shots.forEach(function (s) {
-    if (s.userId !== userId) return;
+    if (userId && s.userId !== userId) return; // userId空文字はチーム合算(全員分を含める)
     if (s.situation) hasLive = true;
     if (targetKey) {
       var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;

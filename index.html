@@ -286,6 +286,10 @@
           <button class="pagebtn" id="trendGranWeek">週別</button>
           <button class="pagebtn active" id="trendGranMonth">月別</button>
         </div>
+        <div class="row hidden" style="gap:8px; margin-top:8px" id="trendMetricRow">
+          <button class="pagebtn active" id="trendMetricPct">確率</button>
+          <button class="pagebtn" id="trendMetricAttempts">本数</button>
+        </div>
         <canvas id="trendChart" height="220" style="margin-top:12px"></canvas>
         <div id="trendTable" style="margin-top:8px"></div>
       </div>
@@ -536,6 +540,8 @@ var state = {
   recordPage: 'shared', // 記録タブの表示ページ: 'shared'(共通) | 'personal'(マイスポット)
   addScope: 'personal', // 設定タブでスポット追加する対象
   trendGranularity: 'month', // 推移サブページの粒度: 'day' | 'week' | 'month'
+  trendMetric: 'pct',        // 推移グラフの指標: 'pct'(確率) | 'attempts'(本数)。本数はホスト限定
+  trendPoints: [],           // 直近取得した推移データ(指標切替時の再描画に使う)
   myGranularity: 'month',    // スタッツサブページの粒度: 'day' | 'week' | 'month'
   myPage: 'stats',           // じぶんタブのサブページ: 'stats' | 'trend'
   teamPage: 'ranking',       // チームタブのサブページ: 'ranking' | 'license'
@@ -1862,10 +1868,11 @@ async function loadMyStats(){
     applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
   }
 }
-// じぶんタブのスタッツで表示する対象。null=自分、userId=ホストが選んだ他のメンバー
+// じぶんタブのスタッツで表示する対象。null=自分、'__team__'=チーム合算、userId=ホストが選んだ他のメンバー
 function myStatsTargetId(){
   var sel = document.getElementById('myStatsWho');
-  return (state.isHost && sel && sel.value && sel.value !== 'me') ? sel.value : null;
+  if(!state.isHost || !sel || !sel.value || sel.value === 'me') return null;
+  return sel.value === 'team' ? '__team__' : sel.value;
 }
 function fillMyStatsWhoSelector(){
   var sel = document.getElementById('myStatsWho');
@@ -1874,6 +1881,7 @@ function fillMyStatsWhoSelector(){
   var prev = sel.value;
   sel.innerHTML = '<option value="me">自分</option>';
   if(state.isHost){
+    var teamOpt = document.createElement('option'); teamOpt.value='team'; teamOpt.textContent='チーム'; sel.appendChild(teamOpt);
     state.members.filter(function(m){ return m.userId !== state.user.userId; }).forEach(function(m){
       var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o);
     });
@@ -2137,6 +2145,15 @@ function setTrendGranularity(g){
   document.getElementById('trendGranMonth').classList.toggle('active', g==='month');
   loadTrend();
 }
+// 本数の推移はホストだけが気にしていて、他の全員には確率のみで十分なのでボタンごと隠す
+onTap(document.getElementById('trendMetricPct'), function(){ setTrendMetric('pct'); });
+onTap(document.getElementById('trendMetricAttempts'), function(){ setTrendMetric('attempts'); });
+function setTrendMetric(m){
+  state.trendMetric = m;
+  document.getElementById('trendMetricPct').classList.toggle('active', m==='pct');
+  document.getElementById('trendMetricAttempts').classList.toggle('active', m==='attempts');
+  renderTrendChart(state.trendPoints || []);
+}
 function formatTrendKey(key, g){
   if(g==='month') return key.slice(2).replace('-','/');
   if(g==='week') return key.slice(5).replace('-','/')+'週';
@@ -2156,6 +2173,9 @@ function fillTrendWhoSelector(){
 }
 async function loadTrend(){
   renderTrendPageRow();
+  // 本数の推移を気にしているのはホストだけなので、切替ボタンごとホスト限定で出す
+  document.getElementById('trendMetricRow').classList.toggle('hidden', !state.isHost);
+  if(!state.isHost && state.trendMetric !== 'pct') setTrendMetric('pct');
   var spotId=document.getElementById('trendSpotSel').value;
   if(!spotId) return;
   var who=document.getElementById('trendWho').value;
@@ -2165,27 +2185,34 @@ async function loadTrend(){
   var payload = { spotId: spotId, userId: state.user.userId, targetUserId: targetUserId, granularity: g };
   if(state.trendPage === 'live') payload.situation = document.getElementById('trendSituationSel').value;
   var d = await api('getTrend', payload);
-  var labels=d.points.map(function(p){ return formatTrendKey(p.key, g); });
-  var data=d.points.map(function(p){ return p.pct; });
+  state.trendPoints = d.points;
+  renderTrendChart(d.points);
+}
+function renderTrendChart(points){
+  var g = state.trendGranularity;
+  var metric = state.trendMetric;
+  var labels=points.map(function(p){ return formatTrendKey(p.key, g); });
+  var data=points.map(function(p){ return metric==='attempts' ? p.attempts : p.pct; });
   // グラフ部品(Chart.js)が読み込めていない場合(電波不良など)でも、下の表だけは表示する
   if(typeof Chart !== 'undefined'){
     if(state.chart) state.chart.destroy();
     var ctx=document.getElementById('trendChart');
+    var isPct = metric !== 'attempts';
     state.chart=new Chart(ctx,{
       type:'line',
-      data:{ labels:labels, datasets:[{ label:'確率(%)', data:data,
+      data:{ labels:labels, datasets:[{ label: isPct ? '確率(%)' : '本数', data:data,
         borderColor:'#ff7a1a', backgroundColor:'rgba(255,122,26,.15)', fill:true, tension:.3,
         pointRadius:4, pointBackgroundColor:'#ff7a1a' }]},
       options:{ responsive:true, plugins:{legend:{display:false}},
-        scales:{ y:{min:0,max:100, ticks:{color:'#9aa7b4'}, grid:{color:'#2c3540'}},
+        scales:{ y:{min:0, max: isPct?100:undefined, ticks:{color:'#9aa7b4'}, grid:{color:'#2c3540'}},
                  x:{ticks:{color:'#9aa7b4'}, grid:{display:false}} } }
     });
   }
   var host=document.getElementById('trendTable');
-  if(!d.points.length){ host.innerHTML='<div class="muted center" style="padding:10px">記録がありません</div>'; return; }
+  if(!points.length){ host.innerHTML='<div class="muted center" style="padding:10px">記録がありません</div>'; return; }
   var periodLabel = g==='day'?'日':g==='week'?'週':'月';
   var prev=null, html='<table><thead><tr><th>'+periodLabel+'</th><th>本数</th><th>確率</th><th>前'+periodLabel+'比</th></tr></thead><tbody>';
-  d.points.forEach(function(p){
+  points.forEach(function(p){
     var diff = prev===null? '—' : ((p.pct-prev>=0?'+':'')+(Math.round((p.pct-prev)*10)/10)+'pt');
     var col = prev===null? 'var(--muted)' : (p.pct-prev>=0?'var(--good)':'var(--bad)');
     html+='<tr><td>'+formatTrendKey(p.key, g)+'</td><td>'+p.makes+'/'+p.attempts+'</td><td><b>'+p.pct+'%</b></td><td style="color:'+col+'">'+diff+'</td></tr>';
