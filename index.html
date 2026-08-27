@@ -2439,7 +2439,7 @@ function renderSpotList(){
   sharedHost.innerHTML=''; personalHost.innerHTML='';
   document.getElementById('sharedListHint').textContent = state.isHost ? '' : '共通スポットの追加・削除はホストのみ行えます';
 
-  function row(sp, host, deletable){
+  function row(sp, host, deletable, guardDelete){
     var el=document.createElement('div'); el.className='listitem';
     el.innerHTML='<span>'+esc(sp.name)+'</span>';
     if(deletable){
@@ -2447,12 +2447,26 @@ function renderSpotList(){
       onTap(move, function(){ enterMoveMode(sp); });
       el.appendChild(move);
       var del=document.createElement('button'); del.textContent='削除'; del.className='muted';
-      onTap(del, async function(){
-        if(!confirm(sp.name+' を削除しますか？(過去の記録は残ります)')) return;
+      async function doDelete(){
         try{ var d=await api('deleteSpot',{spotId:sp.id, userId: state.user.userId}); state.spots=d.spots;
           renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList(); toast('削除しました'); }
         catch(e){ toast('エラー: '+e.message); }
-      });
+      }
+      if(guardDelete){
+        // 共通スポットはめったに変更しない前提なので、誤操作防止に2回押しを要求する
+        // (1回目で「本当に削除？」に変わり、3秒以内にもう一度押すと削除される)
+        var armed = false, armTimer = null;
+        onTap(del, function(){
+          if(armed){ clearTimeout(armTimer); doDelete(); return; }
+          armed = true; del.textContent='本当に削除？'; del.style.color='var(--bad)'; del.style.borderColor='var(--bad)';
+          armTimer = setTimeout(function(){ armed=false; del.textContent='削除'; del.style.color=''; del.style.borderColor=''; }, 3000);
+        });
+      }else{
+        onTap(del, function(){
+          if(!confirm(sp.name+' を削除しますか？(過去の記録は残ります)')) return;
+          doDelete();
+        });
+      }
       el.appendChild(del);
     }
     host.appendChild(el);
@@ -2464,7 +2478,7 @@ function renderSpotList(){
   var tn = editTargetName();
   document.getElementById('personalListTitle').textContent = tn ? tn+'さんのスポット一覧' : 'マイスポット一覧';
   if(!shared.length) sharedHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
-  else shared.forEach(function(sp){ row(sp, sharedHost, state.isHost); });
+  else shared.forEach(function(sp){ row(sp, sharedHost, state.isHost, true); });
   if(!personal.length) personalHost.innerHTML = '<div class="muted center" style="padding:10px">まだありません</div>';
   else personal.forEach(function(sp){ row(sp, personalHost, true); });
 }
