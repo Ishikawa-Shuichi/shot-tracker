@@ -1013,8 +1013,10 @@ function courtSvgMarkup(){
   // basket 上部中央。ざっくりしたハーフコート。
   return ''
    + '<rect x="2" y="2" width="96" height="96" rx="2" fill="none" stroke="#4a5763" stroke-width="0.8"/>'
-   + '<rect x="38" y="2" width="24" height="34" fill="none" stroke="#4a5763" stroke-width="0.8"/>'      // ペイント
-   + '<circle cx="50" cy="36" r="9" fill="none" stroke="#4a5763" stroke-width="0.8"/>'                  // FTサークル
+   // ペイントとFTサークルは実寸比率(幅4.9m・サークル直径3.6m・FTライン5.8m)に合わせる。
+   // サークル両端の延長線上=スロットの位置が実際のコートどおり外に広がり、トップと近すぎなくなる
+   + '<rect x="34.5" y="2" width="31" height="37" fill="none" stroke="#4a5763" stroke-width="0.8"/>'    // ペイント
+   + '<circle cx="50" cy="39" r="11.5" fill="none" stroke="#4a5763" stroke-width="0.8"/>'               // FTサークル
    + '<line x1="42" y1="7" x2="58" y2="7" stroke="#e0e0e0" stroke-width="1.2"/>'                        // バックボード
    + '<circle cx="50" cy="10.5" r="2.4" fill="none" stroke="var(--accent)" stroke-width="1"/>'          // リング
    + '<path d="M 8,2 L 8,16 A 42,42 0 0 0 92,16 L 92,2" fill="none" stroke="#6b7885" stroke-width="0.9"/>'; // 3Pライン
