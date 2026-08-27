@@ -56,7 +56,8 @@
      箱幅がラベル幅まで広がると、左寄せの丸が(ラベル幅-丸幅)/2だけ左にズレて
      「設定でタップした位置と記録画面の丸の位置が合わない」ため */
   .spot .lab{position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:3px;
-    font-size:11px; color:var(--fg); text-shadow:0 1px 3px #000; white-space:nowrap;}
+    font-size:11px; color:var(--fg); text-shadow:0 1px 3px #000; text-align:center;}
+  .spot .lab div{white-space:nowrap;}
   .spot.small .dot{width:34px;height:34px;font-size:10px;}
 
   /* タブバー */
@@ -1043,8 +1044,9 @@ function renderCourt(){
     el.style.left = sp.x + '%'; el.style.top = sp.y + '%';
     var label = st && st.attempts>0 ? (st.makes+'/'+st.attempts) : '記録';
     var liveMark = st && st.live && st.live.unlocked ? ' 🔓' : '';
-    el.innerHTML = '<div class="dot">'+label+'</div><div class="lab">'+esc(sp.name)+liveMark+
-      (st && st.attempts>0 ? ' <b>'+st.pct+'%</b>':'')+'</div>';
+    // 確率は名前と別行にする(同じ行だとスロット・トップのように近接したスポット同士でラベルが重なるため)
+    var pctLine = (st && st.attempts>0) ? ('<div><b>'+st.pct+'%</b></div>') : '';
+    el.innerHTML = '<div class="dot">'+label+'</div><div class="lab"><div>'+esc(sp.name)+liveMark+'</div>'+pctLine+'</div>';
     onTap(el, function(){ openRecord(sp); });
     wrap.appendChild(el);
   });
