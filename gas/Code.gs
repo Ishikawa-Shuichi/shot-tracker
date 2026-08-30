@@ -31,9 +31,8 @@ var SHEET_FEST_PARTICIPANTS = 'FestParticipants';
 // ===== チーム共同ゴール(シュートフェス) ============================
 // 期間限定(1週間)のチーム協力イベント。上限は設けない(頑張るほど得をする設計を貫く)。
 // 3段階の目標を、シチュエーション・スポットを問わず全員の全記録の合計本数で判定する。
-var FEST_ENABLED = true;
+var FEST_ENABLED = true; // 開催そのものを止めたい月だけfalseにする(通常はtrueのまま自動運用)
 var FEST_NAME = 'シュートフェス';
-var FEST_WEEK_MONDAY = '2026-08-24'; // 対象週(月曜)。次回開催時はここを書き換える
 var FEST_TIERS = [1000, 2000, 3000];
 var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
 var FEST_SUNDAY_MULTIPLIER = 2;  // 3段階目未達のまま日曜を迎えた場合、その日の本数を何倍で加算するか
@@ -886,10 +885,16 @@ function actionGetAllLicenses_(body) {
 
 // ===== チーム共同ゴール(シュートフェス) ============================
 
+// その月の「月末に収まる直近の月〜日」を自動計算する(手動で日付を書き換える必要をなくすため)。
+// 月末日から直前の日曜まで遡り、そこから6日前を月曜とする。月をまたがないので、
+// 月の途中でこの関数を呼んでも常にその月の最終週が返る。
 function festDateRange_() {
-  var mon = new Date(FEST_WEEK_MONDAY + 'T00:00:00');
-  var sun = new Date(mon); sun.setDate(sun.getDate() + 6);
-  return { monday: FEST_WEEK_MONDAY, sunday: dateOf_(sun) };
+  var todayStr = dateOf_(new Date());
+  var y = Number(todayStr.slice(0, 4)), m = Number(todayStr.slice(5, 7));
+  var lastDay = new Date(y, m, 0); // 翌月の0日目=今月の最終日(ローカル日付)
+  var sunday = new Date(lastDay); sunday.setDate(sunday.getDate() - lastDay.getDay());
+  var monday = new Date(sunday); monday.setDate(monday.getDate() - 6);
+  return { monday: dateOf_(monday), sunday: dateOf_(sunday) };
 }
 
 // 対象週の合計本数。個人の週目標と同じ方針で、スポット・シチュエーションを問わず全記録を数える
@@ -944,10 +949,14 @@ function festExtraParticipants_() {
 function getFestStatus_(userId, shots) {
   if (!FEST_ENABLED) return { enabled: false };
   var range = festDateRange_();
+  var todayStr = dateOf_(new Date());
+  // 今月のフェス週(月末に収まる直近の月〜日)がまだ来ていない間はカード自体を出さない。
+  // 週が終わった後は、月が変わってfestDateRange_の計算結果が来月分に切り替わるまで
+  // (=todayStrがそちらのmondayより前になるまで)、この条件を満たし続けるので結果が表示され続ける
+  if (todayStr < range.monday) return { enabled: false };
   var t = festTotals_(shots || getShots_());
   var tierReached = festTierReached_(t.displayTotal);
   var tier3Value = FEST_TIERS[FEST_TIERS.length - 1];
-  var todayStr = dateOf_(new Date());
   var isSunday = todayStr === range.sunday;
   var isOver = todayStr > range.sunday;
   var mode = 'normal';
