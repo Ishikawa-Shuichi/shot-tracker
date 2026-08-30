@@ -913,7 +913,10 @@ function festTotals_(shots) {
   var multiplierApplied = false;
   if (!reachedTier3BeforeMultiplier) {
     var todayStr = dateOf_(new Date());
-    if (todayStr === range.sunday) {
+    // 日曜以降(月曜になっても)、倍チャンス込みの結果を維持する。
+    // 週が終わった後もアプリにフェスカードを残す運用があるため、月曜に生本数へ後退して
+    // 「日曜に達成したはずなのに未達に見える」という矛盾が起きないようにする
+    if (todayStr >= range.sunday) {
       displayTotal = (total - sundayRaw) + sundayRaw * FEST_SUNDAY_MULTIPLIER;
       multiplierApplied = sundayRaw > 0;
     }
