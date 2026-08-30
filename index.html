@@ -346,8 +346,12 @@
       <!-- ホスト: 全員分 -->
       <div id="teamHostView" class="hidden">
         <div class="card hidden" id="teamLiveCard" style="border-color:var(--accent2)">
-          <b>🔥 ライブシューティング確率ランキング</b>
-          <div class="muted" style="margin:6px 0">全シチュエーション合計</div>
+          <div class="row"><b class="grow">🔥 ライブシューティング確率ランキング</b>
+            <select id="teamLiveSituationSel" style="width:120px">
+              <option value="">全体(合計)</option>
+            </select>
+          </div>
+          <div class="muted" style="margin:6px 0" id="teamLiveHint">全シチュエーション合計</div>
           <div id="teamLiveBody"></div>
         </div>
         <div class="card">
@@ -1890,18 +1894,42 @@ function renderMyStatsView(stats){
     if(liveSits.length){
       var rows = liveSits.slice();
       if(liveSits.length > 1){
-        var lm=0, la=0;
-        liveSits.forEach(function(s){ lm+=s.makes; la+=s.attempts; });
-        rows.unshift({ name:'ライブ全体', makes:lm, attempts:la, pct: la>0 ? Math.round(lm/la*1000)/10 : 0 });
+        var lm=0, la=0; var bySpotAll={}; var spotOrder=[];
+        liveSits.forEach(function(s){
+          lm+=s.makes; la+=s.attempts;
+          (s.bySpot||[]).forEach(function(sp){
+            if(!bySpotAll[sp.spotId]){ bySpotAll[sp.spotId]={spotId:sp.spotId,name:sp.name,makes:0,attempts:0}; spotOrder.push(sp.spotId); }
+            bySpotAll[sp.spotId].makes+=sp.makes; bySpotAll[sp.spotId].attempts+=sp.attempts;
+          });
+        });
+        var bySpotCombined = spotOrder.map(function(id){ var b=bySpotAll[id]; return { spotId:b.spotId, name:b.name, makes:b.makes, attempts:b.attempts, pct: b.attempts>0 ? Math.round(b.makes/b.attempts*1000)/10 : 0 }; });
+        rows.unshift({ name:'ライブ全体', makes:lm, attempts:la, pct: la>0 ? Math.round(lm/la*1000)/10 : 0, bySpot: bySpotCombined });
       }
+      // シチュエーションを選ぶと、そのシチュエーション内でのスポットごとの確率がわかるように
+      // <details>で折りたたみ、タップした時だけスポット別内訳を展開する
       rows.forEach(function(s){
-        var div=document.createElement('div'); div.style.margin='10px 0';
-        div.innerHTML =
+        var wrap=document.createElement('details'); wrap.style.margin='10px 0';
+        var summary=document.createElement('summary'); summary.style.cursor='pointer'; summary.style.listStyle='none';
+        summary.innerHTML =
           '<div class="row"><span class="grow">'+esc(s.name)+'</span>'
           +'<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
           +'<b class="pct">'+s.pct+'%</b></div>'
           +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
-        sitHost.appendChild(div);
+        wrap.appendChild(summary);
+        if(s.bySpot && s.bySpot.length){
+          var body=document.createElement('div'); body.style.cssText='margin-top:10px; padding-top:8px; border-top:1px solid var(--line)';
+          s.bySpot.forEach(function(sp){
+            var row=document.createElement('div'); row.style.margin='8px 0';
+            row.innerHTML =
+              '<div class="row"><span class="grow muted" style="font-size:13px">'+esc(sp.name)+'</span>'
+              +'<span class="muted" style="margin-right:8px; font-size:12px">'+sp.makes+'/'+sp.attempts+'</span>'
+              +'<b class="pct" style="font-size:13px">'+sp.pct+'%</b></div>'
+              +'<div class="barbg" style="margin-top:4px; height:6px"><div class="bar" style="width:'+Math.min(100,sp.pct)+'%"></div></div>';
+            body.appendChild(row);
+          });
+          wrap.appendChild(body);
+        }
+        sitHost.appendChild(wrap);
       });
     }
   }
@@ -2036,7 +2064,8 @@ async function loadTeam(){
   document.getElementById('teamMeOnly').classList.toggle('hidden', state.isHost);
   document.getElementById('teamHostView').classList.toggle('hidden', !state.isHost);
   if(state.isHost){
-    state.teamData = await api('getTeamStats', { ym: state.ym, userId: state.user.userId });
+    var liveSituation = document.getElementById('teamLiveSituationSel').value;
+    state.teamData = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, situation: liveSituation });
     renderStreakCard(state.teamData.streaks);
     fillUserSelector(state.teamData.users);
     renderTeamView();
@@ -2044,10 +2073,12 @@ async function loadTeam(){
     renderPctRankTable('teamTotalPctBody', state.teamData.threePointRanking);
     document.getElementById('teamFtHint').textContent = state.teamData.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
     renderPctRankTable('teamFtBody', state.teamData.freeThrowRanking);
-    // ライブ記録が1件でもあれば表示(ホストは常に全体を見られる)
-    var liveRanking = state.teamData.liveRanking || [];
-    document.getElementById('teamLiveCard').classList.toggle('hidden', !liveRanking.length);
-    renderPctRankTable('teamLiveBody', liveRanking);
+    // カードの表示可否は「チーム全体でこれまでに一度でもライブ記録があるか」で決める(選択中のシチュエーションに
+    // 記録がまだ無くても、セレクタごと消えて選び直せなくならないように)
+    fillTeamLiveSituationSelector(state.teamData.liveSituations || []);
+    document.getElementById('teamLiveCard').classList.toggle('hidden', !state.teamData.liveHasAny);
+    document.getElementById('teamLiveHint').textContent = liveSituation ? liveSituation+'のみ' : '全シチュエーション合計';
+    renderPctRankTable('teamLiveBody', state.teamData.liveRanking || []);
   }else{
     var spotId = document.getElementById('teamSpotSelMe').value;
     var d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
@@ -2076,6 +2107,16 @@ function renderPctRankTable(hostId, rows){
   html+='</tbody></table>';
   host.innerHTML=html;
 }
+function fillTeamLiveSituationSelector(situations){
+  var sel = document.getElementById('teamLiveSituationSel');
+  var prev = sel.value;
+  sel.innerHTML = '<option value="">全体(合計)</option>';
+  situations.forEach(function(name){
+    var o=document.createElement('option'); o.value=name; o.textContent=name; sel.appendChild(o);
+  });
+  if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
+}
+document.getElementById('teamLiveSituationSel').addEventListener('change', loadTeam);
 function renderMyRankWithTop(hostId, summary){
   var host = document.getElementById(hostId);
   if(!summary || (!summary.mine && !summary.top)){ host.innerHTML='<div class="muted center" style="padding:16px">この期間の記録がありません</div>'; return; }
@@ -2154,11 +2195,26 @@ function renderTeamUser(userId){
   var spotName = {}; var spotScope = {};
   d.spots.forEach(function(sp){ spotName[sp.spotId]=sp.name; spotScope[sp.spotId]=sp.scope; });
   var html = '<div class="row"><b class="grow">'+esc(u.name)+'</b><span class="pill">合計 '+u.total.makes+'/'+u.total.attempts+' ('+u.total.pct+'%)</span></div>';
-  if(u.live && u.live.attempts > 0){
-    html += '<div class="row" style="margin-top:8px; padding:8px; border-radius:8px; background:var(--card2)">'
-      + '<span class="grow">🔥 ライブ全体</span>'
-      + '<span class="muted" style="margin-right:8px">'+u.live.makes+'/'+u.live.attempts+'</span>'
-      + '<b class="pct">'+u.live.pct+'%</b></div>';
+  // 選択中がシチュエーション指定なら、このスポットごとの内訳(bySpot)込みでそのシチュエーションだけ表示する。
+  // 「全体(合計)」選択時はu.liveの全シチュエーション合計をそのまま出す(内訳はシチュエーションを選んでから)
+  var liveSituationNow = d.liveSituation || '';
+  var liveEntry = liveSituationNow
+    ? (d.liveRanking || []).find(function(x){ return x.userId === userId; })
+    : u.live;
+  if(liveEntry && liveEntry.attempts > 0){
+    html += '<div style="margin-top:8px; padding:8px; border-radius:8px; background:var(--card2)">'
+      + '<div class="row"><span class="grow">🔥 ライブ'+(liveSituationNow ? esc(liveSituationNow) : '全体')+'</span>'
+      + '<span class="muted" style="margin-right:8px">'+liveEntry.makes+'/'+liveEntry.attempts+'</span>'
+      + '<b class="pct">'+liveEntry.pct+'%</b></div>';
+    if(liveEntry.bySpot && liveEntry.bySpot.length){
+      liveEntry.bySpot.forEach(function(sp){
+        if(!(sp.attempts > 0)) return; // このシチュエーションでまだ打っていないスポットは並べない
+        html += '<div class="row" style="margin-top:6px"><span class="grow muted" style="font-size:12px; padding-left:8px">'+esc(sp.name)+'</span>'
+          + '<span class="muted" style="margin-right:8px; font-size:12px">'+sp.makes+'/'+sp.attempts+'</span>'
+          + '<b class="pct" style="font-size:12px">'+sp.pct+'%</b></div>';
+      });
+    }
+    html += '</div>';
   }
   u.spots.forEach(function(s){
     // 個人スポットは記録がある行だけ表示(全員分の個人スポットで0/0の行が並ばないように)

@@ -490,10 +490,24 @@ function actionGetTeamStats_(body) {
     ? allUsers.filter(function (u) { return attemptsOf_(u, ftId) > 0; }).sort(function (a, b) { return pctOf_(b, ftId) - pctOf_(a, ftId); })
     : [];
 
-  // ライブシューティング確率(全シチュエーション合計)。スポットの確率とは混ぜず専用ランキングにする
-  var liveRanked = allUsers.filter(function (u) { return u.live && u.live.attempts > 0; })
-    .sort(function (a, b) { return b.live.pct - a.live.pct; });
-  function liveExtraOf_(u) { return { makes: u.live.makes, attempts: u.live.attempts, pct: u.live.pct }; }
+  // ライブシューティング確率。スポットの確率とは混ぜず専用ランキングにする。
+  // situation指定なし= 全シチュエーション合計(従来通り)。指定ありならそのシチュエーションだけで見る
+  // (スポットごとの内訳はbySpotにそのまま入っているので、選んだシチュエーションの中でどのスポットが
+  // 得意/苦手かも同時にわかる)
+  var liveSituation = String(body.situation || '');
+  function liveExtraOf_(u) {
+    if (!liveSituation) return { makes: u.live.makes, attempts: u.live.attempts, pct: u.live.pct, bySpot: null };
+    var found = null;
+    (u.live.bySituation || []).forEach(function (s) { if (s.situation === liveSituation) found = s; });
+    return found ? { makes: found.makes, attempts: found.attempts, pct: found.pct, bySpot: found.bySpot }
+                 : { makes: 0, attempts: 0, pct: 0, bySpot: null };
+  }
+  var liveRanked = allUsers.filter(function (u) { return liveExtraOf_(u).attempts > 0; })
+    .sort(function (a, b) { return liveExtraOf_(b).pct - liveExtraOf_(a).pct; });
+  // カード自体の表示可否は「チーム全体でこれまでに一度でもライブ記録があるか」で決める(situationの絞り込みとは独立)。
+  // 選択中のシチュエーションだけで判定すると、まだ誰も試していないシチュエーションを選んだ瞬間に
+  // セレクタごとカードが消えて選び直せなくなるため
+  var liveHasAny = allUsers.some(function (u) { return u.live && u.live.attempts > 0; });
 
   if (isHost) {
     var spotsMetaAll = allSpots.map(function (s) { return { spotId: s.id, name: s.name, scope: s.scope, ownerId: s.ownerId }; });
@@ -514,9 +528,10 @@ function actionGetTeamStats_(body) {
         var s = spotStatOf_(u, ftId);
         return { userId: u.userId, name: u.name, makes: s.makes, attempts: s.attempts, pct: s.pct };
       }),
+      liveSituation: liveSituation, liveSituations: LIVE_SITUATIONS, liveHasAny: liveHasAny,
       liveRanking: liveRanked.map(function (u) {
         var l = liveExtraOf_(u);
-        return { userId: u.userId, name: u.name, makes: l.makes, attempts: l.attempts, pct: l.pct };
+        return { userId: u.userId, name: u.name, makes: l.makes, attempts: l.attempts, pct: l.pct, bySpot: l.bySpot };
       })
     };
   }
@@ -546,11 +561,15 @@ function actionGetTeamStats_(body) {
     }) : { mine: null, top: null },
     // ライブは隠し要素なので、一度でも解放したことがある人にだけランキング欄ごと返す
     // (未解放の人には欄の存在も見せない。通信内容にも含めない)
+    liveSituation: liveSituation, liveSituations: LIVE_SITUATIONS,
     liveRank: hasEverUnlockedLive_(allShotsForStreak, requestUserId, allSpots)
       ? rankSummary_(liveRanked, requestUserId, liveExtraOf_)
       : null
   };
 }
+// シチュエーションの固定語彙(推移タブの選択肢と揃える)。ここに無い値が記録されていても、
+// 「全体」には反映されるが、選択式のシチュエーション別内訳には出ない
+var LIVE_SITUATIONS = ['HO', 'チェック', 'ミート', 'ドリブル'];
 
 // その人がライブシューティングをどこかのスポットで一度でも解放したことがあるか
 function hasEverUnlockedLive_(shots, userId, spots) {
@@ -1125,6 +1144,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
   }
   var bySpot = {};
   var bySituation = {};
+  var bySitSpot = {}; // シチュエーション -> スポットID -> {makes,attempts}(シチュエーション別カードのスポット内訳用)
   var hasLive = false; // 期間に関係なく、ライブ記録を一度でも持っているか(推移タブのライブ切替の表示判定用)
   shots.forEach(function (s) {
     if (userId && s.userId !== userId) return; // userId空文字はチーム合算(全員分を含める)
@@ -1137,8 +1157,13 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
     var sb = bySituation[sitKey] || (bySituation[sitKey] = { makes: 0, attempts: 0 });
     sb.makes += s.makes; sb.attempts += s.attempts;
     // スポット別・合計の確率はスポットシューティング(指定なし)のみで計算する。
-    // ライブ分は上のシチュエーション別内訳にだけ入る(難易度が違う確率を混ぜない)
-    if (s.situation) return;
+    // ライブ分は上のシチュエーション別内訳と、シチュエーション×スポットの内訳にだけ入る(難易度が違う確率を混ぜない)
+    if (s.situation) {
+      var ssMap = bySitSpot[sitKey] || (bySitSpot[sitKey] = {});
+      var ssb = ssMap[s.spotId] || (ssMap[s.spotId] = { makes: 0, attempts: 0 });
+      ssb.makes += s.makes; ssb.attempts += s.attempts;
+      return;
+    }
     var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
   });
@@ -1151,6 +1176,7 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
   var tot = stats.reduce(function (a, s) { a.makes += s.makes; a.attempts += s.attempts; return a; }, { makes: 0, attempts: 0 });
   // シチュエーション別の内訳(記録に使われたものだけ返す)。固定の並び順→その他(カスタム等)の順
   var sitOrder = ['', 'HO', 'チェック', 'ミート', 'ドリブル'];
+  var threePointSpotsForLive = spots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; });
   var situations = Object.keys(bySituation)
     .sort(function (a, b2) {
       var ia = sitOrder.indexOf(a), ib = sitOrder.indexOf(b2);
@@ -1158,7 +1184,12 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
     })
     .map(function (k) {
       var v = bySituation[k];
-      return { key: k, name: k || '指定なし', makes: v.makes, attempts: v.attempts, pct: pct_(v.makes, v.attempts) };
+      // 「指定なし」(通常のスポットシューティング)はスポット別一覧が別途あるので、ここでは重複させない
+      var bySpotOut = k ? threePointSpotsForLive.map(function (sp) {
+        var b = (bySitSpot[k] && bySitSpot[k][sp.id]) || { makes: 0, attempts: 0 };
+        return { spotId: sp.id, name: sp.name, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+      }) : null;
+      return { key: k, name: k || '指定なし', makes: v.makes, attempts: v.attempts, pct: pct_(v.makes, v.attempts), bySpot: bySpotOut };
     });
   return {
     granularity: granularity, period: period, spots: stats, situations: situations, hasLiveRecords: hasLive,
@@ -1269,6 +1300,23 @@ function invalidateSpotsCache_() {
   CacheService.getScriptCache().remove(SPOTS_CACHE_KEY);
 }
 
+// liveBySit(シチュエーション×スポットの内訳)から、表示用の完成形を組み立てる。
+// 「全体」の確率(後方互換・ライブ全体カード用)と、シチュエーションごとのスポット別内訳の両方を返す。
+function liveSummaryOf_(liveBySit, allSpots) {
+  var threePointSpots = allSpots.filter(function (sp) { return sp.scope !== 'personal' && THREE_POINT_NAMES.indexOf(sp.name) !== -1; });
+  var totalM = 0, totalA = 0;
+  var bySituation = Object.keys(liveBySit || {}).map(function (sit) {
+    var s = liveBySit[sit];
+    totalM += s.makes; totalA += s.attempts;
+    var bySpot = threePointSpots.map(function (sp) {
+      var b = s.bySpot[sp.id] || { makes: 0, attempts: 0 };
+      return { spotId: sp.id, name: sp.name, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts) };
+    });
+    return { situation: sit, makes: s.makes, attempts: s.attempts, pct: pct_(s.makes, s.attempts), bySpot: bySpot };
+  }).sort(function (a, b) { return b.attempts - a.attempts; });
+  return { makes: totalM, attempts: totalA, pct: pct_(totalM, totalA), bySituation: bySituation };
+}
+
 // チーム統計用の重い集計(全ユーザー×全スポットの内訳・スリーポイント合計)をym単位で短時間キャッシュする。
 // spotId(スポット別確率の絞り込み)は軽い処理なのでキャッシュ対象に含めず、呼び出し側でその都度計算する。
 function getTeamAggregate_(ym) {
@@ -1285,13 +1333,21 @@ function getTeamAggregate_(ym) {
   var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
   shots.forEach(function (s) {
     if (ym && s.ym !== ym) return;
-    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0, lm: 0, la: 0 });
+    var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0, liveBySit: {} });
     u.name = s.displayName || u.name; // 最新表示名で上書き
     u.taAll += s.attempts; // 本数ランキング用: 個人スポット分もライブ分もすべて合算する(打った本数は打った本数)
     // スポットの確率集計はスポットシューティング(シチュエーション指定なし)のみ。
     // ライブは難易度が高く、混ぜると確率が下がって「確率を守るためにライブを打たない」動機になってしまうため、
-    // スポットとは混ぜずライブ専用の確率(ライブランキング用)として別枠で集計する
-    if (s.situation) { u.lm += s.makes; u.la += s.attempts; return; }
+    // スポットとは混ぜずライブ専用の確率として別枠で集計する。
+    // シチュエーション×スポットで内訳を持たせ、ランキング(シチュエーション単位)と
+    // 個人の内訳表示(スポット単位)の両方をこの1回の集計から作れるようにする
+    if (s.situation) {
+      var sitMap = u.liveBySit[s.situation] || (u.liveBySit[s.situation] = { makes: 0, attempts: 0, bySpot: {} });
+      sitMap.makes += s.makes; sitMap.attempts += s.attempts;
+      var spotBucket = sitMap.bySpot[s.spotId] || (sitMap.bySpot[s.spotId] = { makes: 0, attempts: 0 });
+      spotBucket.makes += s.makes; spotBucket.attempts += s.attempts;
+      return;
+    }
     var b = u.spots[s.spotId] || (u.spots[s.spotId] = { makes: 0, attempts: 0 });
     b.makes += s.makes; b.attempts += s.attempts;
     // 確率系ランキング(総合確率など)には個人スポットを含めない(他の人と比較できないため)
@@ -1315,7 +1371,7 @@ function getTeamAggregate_(ym) {
       userId: u.userId, name: u.name, spots: spotStats, totalAttemptsAll: u.taAll,
       total: { makes: u.tm, attempts: u.ta, pct: pct_(u.tm, u.ta) },
       threePoint: { makes: tpm, attempts: tpa, pct: pct_(tpm, tpa) },
-      live: { makes: u.lm, attempts: u.la, pct: pct_(u.lm, u.la) }
+      live: liveSummaryOf_(u.liveBySit, allSpots)
     };
   });
 
