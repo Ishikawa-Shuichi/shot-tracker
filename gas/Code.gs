@@ -212,9 +212,25 @@ function actionAddSpot_(body) {
   var sh = getSheet_(SHEET_SPOTS);
   var id = Utilities.getUuid();
   var order = sh.getLastRow(); // ヘッダ含む行数 ≒ 追加順
-  sh.appendRow([id, name, x, y, order, true, new Date().toISOString(), scope, ownerId]);
+  sh.appendRow([id, name, x, y, order, true, new Date().toISOString(), scope, ownerId, '']);
   invalidateSpotsCache_();
   return { spots: getSpots_(userId, userId === HOST_USER_ID) };
+}
+
+// マイスポット用カスタムシチュエーションの入力を掃除する(カンマ区切り文字列or配列を受ける)。
+// 各名前は10文字まで・最大6個・重複除去。ライブの固定シチュエーションと同名でも構わない
+// (集計はスポットのscopeで区別されるため混ざらない)
+function sanitizeSituations_(raw) {
+  var arr = Array.isArray(raw) ? raw : String(raw || '').split(',');
+  var seen = {};
+  var out = [];
+  arr.forEach(function (s) {
+    var v = String(s || '').trim().slice(0, 10);
+    if (!v || seen[v]) return;
+    seen[v] = true;
+    if (out.length < 6) out.push(v);
+  });
+  return out;
 }
 
 function actionUpdateSpot_(body) {
@@ -228,6 +244,13 @@ function actionUpdateSpot_(body) {
       if (body.name != null) sh.getRange(i + 1, 2).setValue(String(body.name).trim());
       if (body.x != null)    sh.getRange(i + 1, 3).setValue(clampNum_(body.x, 0, 100, rows[i][2]));
       if (body.y != null)    sh.getRange(i + 1, 4).setValue(clampNum_(body.y, 0, 100, rows[i][3]));
+      if (body.situations != null) {
+        // カスタムシチュエーションはマイスポット専用。共通スポットに付けると、シチュエーション付き記録=
+        // ライブ(3PT実戦形式)という集計上の前提が崩れてライブランキングに混入するため禁止する
+        var scope = rows[i][7] ? String(rows[i][7]) : 'shared';
+        if (scope !== 'personal') throw new Error('シチュエーションボタンはマイスポットにのみ設定できます');
+        sh.getRange(i + 1, 10).setValue(sanitizeSituations_(body.situations).join(','));
+      }
       invalidateSpotsCache_();
       return { spots: getSpots_(userId, userId === HOST_USER_ID) };
     }
@@ -1145,13 +1168,28 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
   var bySpot = {};
   var bySituation = {};
   var bySitSpot = {}; // シチュエーション -> スポットID -> {makes,attempts}(シチュエーション別カードのスポット内訳用)
+  var perSpotSit = {}; // マイスポットのカスタムシチュエーション用: スポットID -> シチュエーション名 -> {makes,attempts}
+  var scopeOfSpot = {}; spots.forEach(function (sp) { scopeOfSpot[sp.id] = sp.scope; });
   var hasLive = false; // 期間に関係なく、ライブ記録を一度でも持っているか(推移タブのライブ切替の表示判定用)
   shots.forEach(function (s) {
     if (userId && s.userId !== userId) return; // userId空文字はチーム合算(全員分を含める)
-    if (s.situation) hasLive = true;
+    // マイスポットのカスタムシチュエーション記録: ライブ(共通3PTの実戦形式)ではないので
+    // シチュエーション別カードには混ぜず、スポット自体の合計とスポット内の内訳に数える。
+    // spotsに無いスポットのシチュエーション記録(チーム合算時の他人のマイスポット等)もライブ扱いしない
+    var spotScope = scopeOfSpot[s.spotId];
+    var isPersonalSit = !!s.situation && (!spotScope || spotScope === 'personal');
+    if (s.situation && !isPersonalSit) hasLive = true; // ライブ記録の有無は期間フィルタに関係なく判定する
     if (targetKey) {
       var key = granularity === 'day' ? s.date : granularity === 'week' ? weekKeyOf_(s.date) : s.ym;
       if (key !== targetKey) return;
+    }
+    if (isPersonalSit) {
+      var pb = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
+      pb.makes += s.makes; pb.attempts += s.attempts;
+      var psMap = perSpotSit[s.spotId] || (perSpotSit[s.spotId] = {});
+      var psb = psMap[s.situation] || (psMap[s.situation] = { makes: 0, attempts: 0 });
+      psb.makes += s.makes; psb.attempts += s.attempts;
+      return;
     }
     var sitKey = s.situation || '';
     var sb = bySituation[sitKey] || (bySituation[sitKey] = { makes: 0, attempts: 0 });
@@ -1171,7 +1209,21 @@ function computeMyStats_(spots, shots, userId, granularity, period) {
   var noLive = { unlocked: false, ever: false, periodAttempts: 0, windowMakes: 0, windowAttempts: 0, windowPct: 0 };
   var stats = spots.map(function (sp) {
     var b = bySpot[sp.id] || { makes: 0, attempts: 0 };
-    return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts), live: liveMap[sp.id] || noLive };
+    // マイスポットはシチュエーションごとの内訳も付ける。ボタン設定の並び順を優先し、
+    // ボタンから外した後も記録が残っているシチュエーションは末尾に足す(数字が見えなくならないように)
+    var sitStats = null;
+    if (sp.scope === 'personal') {
+      var rec = perSpotSit[sp.id] || {};
+      var names = (sp.situations || []).slice();
+      Object.keys(rec).forEach(function (n) { if (names.indexOf(n) === -1) names.push(n); });
+      if (names.length) {
+        sitStats = names.map(function (n) {
+          var v = rec[n] || { makes: 0, attempts: 0 };
+          return { name: n, makes: v.makes, attempts: v.attempts, pct: pct_(v.makes, v.attempts) };
+        });
+      }
+    }
+    return { spotId: sp.id, name: sp.name, scope: sp.scope, makes: b.makes, attempts: b.attempts, pct: pct_(b.makes, b.attempts), live: liveMap[sp.id] || noLive, situations: sitStats };
   });
   var tot = stats.reduce(function (a, s) { a.makes += s.makes; a.attempts += s.attempts; return a; }, { makes: 0, attempts: 0 });
   // シチュエーション別の内訳(記録に使われたものだけ返す)。固定の並び順→その他(カスタム等)の順
@@ -1275,7 +1327,8 @@ function getSpots_(viewerUserId, includeAllPersonal) {
     if (scope === 'personal' && !includeAllPersonal) {
       if (!viewerUserId || ownerId !== viewerUserId) continue; // 他人の個人スポットは見せない
     }
-    out.push({ id: String(r[0]), name: String(r[1]), x: Number(r[2]), y: Number(r[3]), order: Number(r[4]), scope: scope, ownerId: ownerId });
+    out.push({ id: String(r[0]), name: String(r[1]), x: Number(r[2]), y: Number(r[3]), order: Number(r[4]), scope: scope, ownerId: ownerId,
+      situations: sanitizeSituations_(r[9]) }); // マイスポットのカスタムシチュエーションボタン(無ければ空配列)
   }
   out.sort(function (a, b) { return a.order - b.order; });
   return out;
@@ -1340,8 +1393,10 @@ function getTeamAggregate_(ym) {
     // ライブは難易度が高く、混ぜると確率が下がって「確率を守るためにライブを打たない」動機になってしまうため、
     // スポットとは混ぜずライブ専用の確率として別枠で集計する。
     // シチュエーション×スポットで内訳を持たせ、ランキング(シチュエーション単位)と
-    // 個人の内訳表示(スポット単位)の両方をこの1回の集計から作れるようにする
-    if (s.situation) {
+    // 個人の内訳表示(スポット単位)の両方をこの1回の集計から作れるようにする。
+    // ただしマイスポットのカスタムシチュエーション記録は「本人専用の練習バリエーション」であり
+    // ライブ(共通3PTの実戦形式)ではないので、liveには入れずスポット自体の合計に数える
+    if (s.situation && scopeOf[s.spotId] !== 'personal') {
       var sitMap = u.liveBySit[s.situation] || (u.liveBySit[s.situation] = { makes: 0, attempts: 0, bySpot: {} });
       sitMap.makes += s.makes; sitMap.attempts += s.attempts;
       var spotBucket = sitMap.bySpot[s.spotId] || (sitMap.bySpot[s.spotId] = { makes: 0, attempts: 0 });
@@ -1439,9 +1494,9 @@ function getSheet_(name) {
   if (!sh) {
     sh = ss.insertSheet(name);
     if (name === SHEET_SPOTS) {
-      sh.appendRow(['id', 'name', 'x', 'y', 'order', 'active', 'createdAt', 'scope', 'ownerId']);
+      sh.appendRow(['id', 'name', 'x', 'y', 'order', 'active', 'createdAt', 'scope', 'ownerId', 'situations']);
       DEFAULT_SPOTS.forEach(function (s, idx) {
-        sh.appendRow([Utilities.getUuid(), s.name, s.x, s.y, idx, true, new Date().toISOString(), 'shared', '']);
+        sh.appendRow([Utilities.getUuid(), s.name, s.x, s.y, idx, true, new Date().toISOString(), 'shared', '', '']);
       });
     } else if (name === SHEET_SHOTS) {
       sh.appendRow(['id', 'timestamp', 'ym', 'date', 'userId', 'displayName', 'spotId', 'makes', 'attempts', 'situation']);

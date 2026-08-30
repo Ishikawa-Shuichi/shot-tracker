@@ -754,14 +754,17 @@ function applyOptimisticShot(payload){
   var stats = null;
   if(payload.userId === state.user.userId) stats = state.myStats;
   else if(state.recordingAs && payload.userId === state.recordingAs.userId) stats = state.proxyStats;
-  // 確率(スポット別・合計)はスポットシューティングのみで計算するため、ライブ記録は加算しない
-  // (履歴・本数系にはサーバー側で反映される)
-  if(stats && !payload.situation && (!state.ym || payload.ym === state.ym)){
+  // 確率(スポット別・合計)への加算ルールはサーバーと同じにする:
+  // 指定なし記録は常に加算、シチュエーション付きはマイスポットの分だけ加算(ライブ記録は別枠のため加算しない)
+  if(stats && (!state.ym || payload.ym === state.ym)){
     var spot = stats.spots.find(function(s){ return s.spotId === payload.spotId; });
-    if(spot){ spot.makes += payload.makes; spot.attempts += payload.attempts; spot.pct = spot.attempts>0 ? Math.round(spot.makes/spot.attempts*1000)/10 : 0; }
-    var t = stats.total;
-    t.makes += payload.makes; t.attempts += payload.attempts; t.pct = t.attempts>0 ? Math.round(t.makes/t.attempts*1000)/10 : 0;
-    if(stats === state.myStats) renderMyStatsView(stats);
+    var countsIntoSpot = !payload.situation || (spot && spot.scope === 'personal');
+    if(countsIntoSpot){
+      if(spot){ spot.makes += payload.makes; spot.attempts += payload.attempts; spot.pct = spot.attempts>0 ? Math.round(spot.makes/spot.attempts*1000)/10 : 0; }
+      var t = stats.total;
+      t.makes += payload.makes; t.attempts += payload.attempts; t.pct = t.attempts>0 ? Math.round(t.makes/t.attempts*1000)/10 : 0;
+      if(stats === state.myStats) renderMyStatsView(stats);
+    }
   }
   applyOptimisticFest(payload);
   renderCourt();
@@ -1093,6 +1096,11 @@ var rec = { makes:5, attempts:10 };
 // 選択はコート下のボタン(liveBar)で行い、押し直すまで維持される(同じドリルを続けることが多いため)。
 var SITUATIONS = ['HO', 'チェック', 'ミート', 'ドリブル'];
 var editSituation = ''; // 記録の編集中だけ使う一時的な選択(コート下の選択状態を上書きしないように別持ち)
+// マイスポットのカスタムシチュエーション選択(スポットIDごとに覚える。連続で同じ練習を記録しやすいように)
+var personalSitChoice = {};
+function personalSitsFor(sp){
+  return (sp && sp.scope === 'personal' && sp.situations && sp.situations.length) ? sp.situations : null;
+}
 // 代理記録中に相手の統計がまだ取れていない間は「不明(=未解放扱い)」にする。
 // 自分の統計で代用すると、自分の解放状態が相手の記録に適用されてしまうため
 function liveStatsSource(){
@@ -1138,12 +1146,15 @@ function renderSituationChips(){
   var live = state.current ? liveForSpot(state.current.id) : null;
   var unlocked = !!(live && live.unlocked);
 
+  var mySits = personalSitsFor(state.current);
+
   if(state.editingShotId){
-    // 編集中: 元がライブ記録、またはスポット解放中ならチップで変更できる。それ以外は何も見せない
-    if(editSituation || unlocked){
+    // 編集中: 元がライブ記録、スポット解放中、またはマイスポットにボタンがあるならチップで変更できる
+    if(editSituation || unlocked || mySits){
       row.classList.remove('hidden');
-      label.textContent = '🔥 シチュエーション(この記録の分だけ変更)';
-      [''].concat(SITUATIONS).forEach(function(sit){
+      label.textContent = (mySits ? '' : '🔥 ') + 'シチュエーション(この記録の分だけ変更)';
+      // マイスポットは自分で設定したボタン、ライブは固定の4種
+      [''].concat(mySits || SITUATIONS).forEach(function(sit){
         var b = document.createElement('button');
         b.textContent = sit || '指定なし';
         if(editSituation === sit) b.classList.add('on');
@@ -1156,7 +1167,23 @@ function renderSituationChips(){
     return;
   }
 
-  // 新規記録: 選択済みシチュエーションがこのスポットに適用されるかどうかだけ表示
+  // 新規記録(マイスポット): 自分で設定したボタンをその場で選べる(前回の選択を覚えておく)
+  if(mySits){
+    row.classList.remove('hidden');
+    label.textContent = 'シチュエーション(任意)';
+    var chosen = personalSitChoice[state.current.id] || '';
+    if(chosen && mySits.indexOf(chosen) === -1){ chosen = ''; personalSitChoice[state.current.id] = ''; } // ボタンから外した名前が残っていたら解除
+    [''].concat(mySits).forEach(function(sit){
+      var b = document.createElement('button');
+      b.textContent = sit || '指定なし';
+      if(chosen === sit) b.classList.add('on');
+      onTap(b, function(){ personalSitChoice[state.current.id] = sit; renderSituationChips(); });
+      q.appendChild(b);
+    });
+    return;
+  }
+
+  // 新規記録(共通スポット): 選択済みシチュエーションがこのスポットに適用されるかどうかだけ表示
   if(unlocked && state.recSituation){
     row.classList.remove('hidden');
     label.textContent = '🔥 「'+state.recSituation+'」として記録します(変更はコート下のボタンで)';
@@ -1353,15 +1380,21 @@ onTap(document.getElementById('recSave'), async function(){
   handledSaveTokens[token] = true;
 
   var prevStreak = state.streak;
-  // シチュエーションは解放中のスポットにだけ適用する(未解放スポットは通常のスポットシューティング扱い)
+  // シチュエーションの適用ルール:
+  // ・マイスポット: 自分で設定したボタンから記録シート内で選んだもの
+  // ・共通スポット: ライブ解放中のみ、コート下バーで選んだもの(未解放は通常のスポットシューティング扱い)
   var liveNow = liveForSpot(state.current.id);
+  var mySitsNow = personalSitsFor(state.current);
+  var situationToSave = mySitsNow
+    ? (mySitsNow.indexOf(personalSitChoice[state.current.id] || '') !== -1 ? personalSitChoice[state.current.id] : '')
+    : ((liveNow && liveNow.unlocked) ? state.recSituation : '');
   var payload = {
     actingUserId: state.user.userId, userId: target.userId, displayName: target.name,
     spotId: state.current.id, makes: rec.makes, attempts: rec.attempts,
     date: dateVal,
     ym: dateVal.slice(0,7),
     spotName: state.current.name,
-    situation: (liveNow && liveNow.unlocked) ? state.recSituation : '',
+    situation: situationToSave,
     viewYm: state.ym,
     clientId: token
   };
@@ -1876,12 +1909,34 @@ function renderMyStatsView(stats){
   document.getElementById('myTotal').textContent = '合計 '+t.makes+'/'+t.attempts+' ('+t.pct+'%)';
   var host = document.getElementById('myStats'); host.innerHTML='';
   stats.spots.forEach(function(s){
-    var div=document.createElement('div'); div.style.margin='10px 0';
-    div.innerHTML =
+    var rowHtml =
       '<div class="row"><span class="grow">'+esc(s.name)+'</span>'
       +'<span class="muted" style="margin-right:8px">'+s.makes+'/'+s.attempts+'</span>'
       +'<b class="pct">'+s.pct+'%</b></div>'
       +'<div class="barbg" style="margin-top:5px"><div class="bar" style="width:'+Math.min(100,s.pct)+'%"></div></div>';
+    // マイスポットでシチュエーション別の記録があるものは、タップでボタンごとの確率を開ける
+    var sitsWithData = (s.situations || []).filter(function(x){ return x.attempts > 0; });
+    if(sitsWithData.length){
+      var det=document.createElement('details'); det.style.margin='10px 0';
+      var sum=document.createElement('summary'); sum.style.cursor='pointer'; sum.style.listStyle='none';
+      sum.innerHTML = rowHtml;
+      det.appendChild(sum);
+      var body=document.createElement('div'); body.style.cssText='margin-top:8px; padding-top:6px; border-top:1px solid var(--line)';
+      sitsWithData.forEach(function(x){
+        var r=document.createElement('div'); r.style.margin='6px 0';
+        r.innerHTML =
+          '<div class="row"><span class="grow muted" style="font-size:13px; padding-left:8px">'+esc(x.name)+'</span>'
+          +'<span class="muted" style="margin-right:8px; font-size:12px">'+x.makes+'/'+x.attempts+'</span>'
+          +'<b class="pct" style="font-size:13px">'+x.pct+'%</b></div>'
+          +'<div class="barbg" style="margin-top:4px; height:6px"><div class="bar" style="width:'+Math.min(100,x.pct)+'%"></div></div>';
+        body.appendChild(r);
+      });
+      det.appendChild(body);
+      host.appendChild(det);
+      return;
+    }
+    var div=document.createElement('div'); div.style.margin='10px 0';
+    div.innerHTML = rowHtml;
     host.appendChild(div);
   });
   // ライブシューティングの成績(ライブの記録があるときだけカードを出す=未解放の人にはカード自体を見せない)。
@@ -2497,8 +2552,25 @@ function renderSpotList(){
 
   function row(sp, host, deletable, guardDelete){
     var el=document.createElement('div'); el.className='listitem';
-    el.innerHTML='<span>'+esc(sp.name)+'</span>';
+    var hasSits = sp.scope==='personal' && sp.situations && sp.situations.length;
+    el.innerHTML='<span>'+esc(sp.name)+(hasSits ? ' <span class="muted" style="font-size:11px">('+sp.situations.map(esc).join('/')+')</span>' : '')+'</span>';
     if(deletable){
+      // マイスポットだけ、シチュエーションボタン(記録時に選べる自分専用の分類)を設定できる
+      if(sp.scope==='personal'){
+        var sits=document.createElement('button'); sits.textContent='シチュ'; sits.className='muted'; sits.style.marginRight='10px';
+        onTap(sits, async function(){
+          var cur = (sp.situations||[]).join(',');
+          var input = prompt('このスポットで使うシチュエーションボタンをカンマ区切りで入力してください(最大6個・各10文字)\n例: 左手,右手\n空欄で無しに戻ります', cur);
+          if(input === null) return; // キャンセル
+          try{
+            var d = await api('updateSpot', { spotId: sp.id, userId: state.user.userId, situations: input });
+            state.spots = d.spots;
+            renderCourt(); renderEditCourt(); fillSpotSelectors(); renderSpotList();
+            toast('シチュエーションボタンを保存しました ✅');
+          }catch(e){ toast('エラー: '+e.message); }
+        });
+        el.appendChild(sits);
+      }
       var move=document.createElement('button'); move.textContent='移動'; move.className='muted'; move.style.marginRight='10px';
       onTap(move, function(){ enterMoveMode(sp); });
       el.appendChild(move);
