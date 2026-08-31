@@ -1617,6 +1617,78 @@ function setupWeeklyTrigger() {
   Logger.log('毎週日曜21:45頃の自動投稿トリガーを設定しました');
 }
 
+// その月が今月かどうかに関わらず、指定した日付がその月の最終日かどうかを判定する。
+// festDateRange_の「今月の最終日を求める」計算と同じ考え方(翌月の0日目=今月の最終日)を使い回す
+function isLastDayOfMonth_(dateStr) {
+  var y = Number(dateStr.slice(0, 4)), m = Number(dateStr.slice(5, 7));
+  var lastDay = new Date(y, m, 0);
+  return dateStr === dateOf_(lastDay);
+}
+
+function computeMonthlyRanking_(shots, ym) {
+  var byUser = {};
+  var teamTotal = 0;
+  shots.forEach(function (s) {
+    if (s.ym !== ym) return;
+    var u = byUser[s.userId] || (byUser[s.userId] = { name: s.displayName, attempts: 0 });
+    u.name = s.displayName || u.name;
+    u.attempts += s.attempts;
+    teamTotal += s.attempts;
+  });
+  var ranked = Object.keys(byUser).map(function (uid) { return { userId: uid, name: byUser[uid].name, attempts: byUser[uid].attempts }; })
+    .sort(function (a, b) { return b.attempts - a.attempts; });
+  return { ym: ym, ranked: ranked, teamTotal: teamTotal };
+}
+
+/** 毎日21:30頃のトリガーから呼ぶ想定。月末以外は何もしない(自己ガード)。
+ * 月末の日に、その月の本数ランキング(5位まで)を個別メッセージで送る。
+ * 「毎月◯日」トリガーは月によって最終日がずれるため使えず、毎日チェックする方式にしている。
+ */
+function sendMonthlyRankingPost_() {
+  var todayStr = dateOf_(new Date());
+  if (!isLastDayOfMonth_(todayStr)) return;
+  var ym = todayStr.slice(0, 7);
+  var shots = getShots_();
+  var r = computeMonthlyRanking_(shots, ym);
+
+  var medals = ['🥇', '🥈', '🥉', '4位', '5位'];
+  var lines = ['📅 ' + ym + ' の月間シュート本数ランキング'];
+  if (r.ranked.length) {
+    r.ranked.slice(0, 5).forEach(function (u, i) { lines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
+    lines.push('');
+    lines.push('チーム合計: ' + r.teamTotal + '本');
+  } else {
+    lines.push('今月はまだ誰も記録していません');
+  }
+  var rankingText = lines.join('\n');
+
+  var attemptsByUser = {};
+  r.ranked.forEach(function (u) { attemptsByUser[u.userId] = u.attempts; });
+  var memberMap = {};
+  getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+  uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
+  var allMembers = broadcastTargets_(memberMap, null).map(function (uid) { return { userId: uid, name: memberMap[uid] }; });
+  var failed = [];
+  allMembers.forEach(function (m) {
+    // 0本の人には個人本数に触れない(weeklyMvpPostと同じ方針。送る目的はトーク履歴を上げること)
+    var myAttempts = attemptsByUser[m.userId] || 0;
+    var personal = myAttempts > 0 ? 'あなたは今月 ' + myAttempts + '本 シュートを打ちました！\n' : '';
+    var text = rankingText + '\n\n' + personal + '今月もお疲れさまでした！🏀';
+    if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
+  });
+  if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
+  Logger.log(ym + 'の月間ランキングを' + allMembers.length + '人に送信しました');
+}
+
+/** 手動実行用: 毎日21:30頃にチェックし、月末の日だけ月間ランキングを自動送信するトリガーを設定する(一度だけ実行) */
+function setupMonthlyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'sendMonthlyRankingPost_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('sendMonthlyRankingPost_').timeBased().everyDays(1).atHour(21).nearMinute(30).create();
+  Logger.log('毎日21:30頃にチェックし、月末だけ月間ランキングを自動送信するトリガーを設定しました');
+}
+
 /** 手動実行用: フェス開始の告知を送る。準備ができたタイミングで1回だけ実行する */
 function sendFestKickoff() {
   var shots = getShots_();
