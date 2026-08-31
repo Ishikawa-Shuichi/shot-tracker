@@ -1640,7 +1640,9 @@ function computeMonthlyRanking_(shots, ym) {
   return { ym: ym, ranked: ranked, teamTotal: teamTotal };
 }
 
-/** 毎日21:45頃のトリガーから呼ぶ想定。月末以外は何もしない(自己ガード)。
+/** 毎日21:50頃のトリガーから呼ぶ想定。月末以外は何もしない(自己ガード)。
+ * 週間DM(日曜21:45)と5分ずらしてあるので、月末が日曜と重なっても連続で2通届くだけで同時にはならない
+ */
  * 月末の日に、その月の本数ランキング(5位まで)を個別メッセージで送る。
  * 「毎月◯日」トリガーは月によって最終日がずれるため使えず、毎日チェックする方式にしている。
  */
@@ -1680,13 +1682,13 @@ function sendMonthlyRankingPost() {
   Logger.log(ym + 'の月間ランキングを' + allMembers.length + '人に送信しました');
 }
 
-/** 手動実行用: 毎日21:45頃にチェックし、月末の日だけ月間ランキングを自動送信するトリガーを設定する(一度だけ実行) */
+/** 手動実行用: 毎日21:50頃にチェックし、月末の日だけ月間ランキングを自動送信するトリガーを設定する(一度だけ実行) */
 function setupMonthlyTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'sendMonthlyRankingPost') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('sendMonthlyRankingPost').timeBased().everyDays(1).atHour(21).nearMinute(45).create();
-  Logger.log('毎日21:45頃にチェックし、月末だけ月間ランキングを自動送信するトリガーを設定しました');
+  ScriptApp.newTrigger('sendMonthlyRankingPost').timeBased().everyDays(1).atHour(21).nearMinute(50).create();
+  Logger.log('毎日21:50頃にチェックし、月末だけ月間ランキングを自動送信するトリガーを設定しました');
 }
 
 /** 手動実行用: フェス開始の告知を送る。準備ができたタイミングで1回だけ実行する */
