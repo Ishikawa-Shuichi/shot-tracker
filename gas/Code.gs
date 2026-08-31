@@ -36,9 +36,10 @@ var FEST_NAME = 'シュートフェス';
 var FEST_TIERS = [1000, 2000, 3000];
 var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
 var FEST_SUNDAY_MULTIPLIER = 2;  // 3段階目未達のまま日曜を迎えた場合、その日の本数を何倍で加算するか
-// フェス期間中(8月)は通知量を絞っていたが、9月から再開する
-var NOTIFY_LIVE_UNLOCK_PAUSED = false;
-var NOTIFY_TROPHY_GATEWAY_ONLY = false; // trueなら「3日連続」以外のチーム初獲得は通知しない
+// 8/31時点で無料枠が残り50通と少ないため、今日だけ一旦停止に戻す。
+// 9/1に無料枠がリセットされたらfalseに戻す想定(スタッフへの新規共有を今日進めるための一時対応)
+var NOTIFY_LIVE_UNLOCK_PAUSED = true;
+var NOTIFY_TROPHY_GATEWAY_ONLY = true; // trueなら「3日連続」以外のチーム初獲得は通知しない
 
 // 一斉配信(トロフィー・ライブ解放・フェス通知)の対象から常に外す人。
 // テストアカウント・運営(ホスト)自身・辞退者は無料メッセージ枠を消費する必要がないため。
