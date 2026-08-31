@@ -1,0 +1,136 @@
+<title>シュートログとは</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@700;900&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0f1216; --card:#191f26; --card2:#222a33; --line:#2c3540;
+    --fg:#eef2f6; --muted:#9aa7b4; --accent:#ff7a1a; --accent2:#3aa0ff;
+    --gold:#f5c518;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0; padding:0;}
+  body{
+    background:var(--bg); color:var(--fg);
+    font-family:'Zen Kaku Gothic New','Hiragino Kaku Gothic ProN',sans-serif;
+    font-size:16px; line-height:1.9;
+  }
+  h1,h2{font-family:'Zen Maru Gothic','Zen Kaku Gothic New',sans-serif; line-height:1.4; text-wrap:balance; margin:0;}
+  .wrap{max-width:560px; margin:0 auto; padding:0 22px;}
+
+  /* ヒーロー */
+  .hero{padding:64px 0 40px; text-align:center;}
+  .hero .ball{font-size:44px; display:inline-block; animation:bounce 2.4s ease-in-out infinite;}
+  @keyframes bounce{0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)}}
+  .hero h1{font-size:2.5rem; font-weight:900; letter-spacing:.04em; margin-top:6px;}
+  .hero .team{color:var(--muted); font-size:.95rem; margin-top:8px; letter-spacing:.06em;}
+  .hero .lead{margin-top:26px; font-size:1.15rem; font-weight:700; line-height:2;}
+  .hero .lead b{color:var(--accent);}
+
+  /* セクション共通 */
+  section{padding:36px 0;}
+  section .num{display:inline-block; background:var(--accent); color:#1a0e04; font-weight:900;
+    font-size:.8rem; padding:3px 12px; border-radius:999px; letter-spacing:.08em; margin-bottom:12px;}
+  section h2{font-size:1.5rem; font-weight:900; margin-bottom:14px;}
+  section p{margin:0 0 10px; max-width:34em;}
+  section .sub{color:var(--muted); font-size:.92rem;}
+  .divider{border:none; border-top:1px solid var(--line); margin:0;}
+
+  /* 実際の画面写真: 小さくて読めなくなるので横並びにせず1枚ずつ大きく縦に積む */
+  .photos{display:flex; flex-direction:column; gap:22px; margin-top:22px;}
+  .photos .ph{max-width:340px; margin:0 auto;}
+  .photos img{display:block; width:100%; border-radius:18px; border:1px solid var(--line);
+    box-shadow:0 18px 44px -18px rgba(0,0,0,.6);}
+  .photos .ph .cap{text-align:center; color:var(--muted); font-size:.78rem; margin-top:8px;}
+  .shot-note{text-align:center; color:var(--muted); font-size:.72rem; margin-top:10px;}
+  .flame{color:var(--accent);}
+
+  /* はじめかた */
+  .steps{margin-top:16px;}
+  .step{display:flex; gap:14px; align-items:flex-start; margin-bottom:16px;}
+  .step .n{flex-shrink:0; width:30px; height:30px; border-radius:50%; background:var(--accent); color:#1a0e04;
+    font-weight:900; display:flex; align-items:center; justify-content:center; font-size:.9rem;}
+  .step p{margin:2px 0 0;}
+
+  footer{padding:36px 0 56px; text-align:center; color:var(--muted); font-size:.8rem;}
+</style>
+
+<div class="wrap">
+
+  <header class="hero">
+    <span class="ball">🏀</span>
+    <h1>シュートログ</h1>
+    <div class="team">山梨アイセブンの シュート練習記録アプリ</div>
+    <p class="lead">打った本数を、記録するだけ。<br>きみの成長が、<b>ぜんぶ残る</b>。</p>
+  </header>
+
+  <hr class="divider">
+
+  <section>
+    <span class="num">できること 1</span>
+    <h2>5秒で記録できる</h2>
+    <p>コートの上のスポットをタップして、打った本数と入った本数を入れるだけ。練習の合間にすぐ終わります。</p>
+    <p class="sub">体育館の電波が弱くても大丈夫。あとから自動で送信されるので、記録は消えません。</p>
+    <p class="sub">チーム共通のスポットのほかに、じぶんだけの「マイスポット」も追加できます。すきな場所・すきな練習を、じぶん専用に記録できます。</p>
+    <div class="photos">
+      <div class="ph"><img src="assets/S__20291587_0.jpg" alt="共通スポットのコート画面"><div class="cap">実際の画面: チーム共通のコート</div></div>
+      <div class="ph"><img src="assets/S__20291588_0.jpg" alt="マイスポットのコート画面"><div class="cap">実際の画面: マイスポットの例</div></div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section>
+    <span class="num">できること 2</span>
+    <h2>じぶんの成長が見える</h2>
+    <p>スポットごとの確率が自動で計算されます。月・週・日のグラフで、前のじぶんとくらべられます。</p>
+    <p class="sub">週の目標本数を決めて、達成をめざすこともできます。</p>
+    <div class="photos">
+      <div class="ph"><img src="assets/S__20291589_0.jpg" alt="スポットごとのスタッツ画面"><div class="cap">実際の画面: スポットごとの確率</div></div>
+      <div class="ph"><img src="assets/S__20291590_0.jpg" alt="確率の推移グラフ画面"><div class="cap">実際の画面: 確率の推移グラフ</div></div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section>
+    <span class="num">できること 3</span>
+    <h2>チームで楽しめる</h2>
+    <p>本数ランキングと、連続で練習した日数<span class="flame">🔥</span>がみんなに見えます。たくさん打った人が、ちゃんとすごいと言われるアプリです。</p>
+    <p class="sub">確率のランキングは、じぶんの順位と1位の人だけが見えます。まわりと比べすぎず、じぶんの成長に集中できます。</p>
+    <p class="sub">仲間の連続記録が見えると、「今日はおれも打とう」って気持ちになります。</p>
+    <div class="photos">
+      <div class="ph"><img src="assets/S__20291592_0.jpg" alt="シュート本数ランキング画面"><div class="cap">実際の画面: 本数ランキング</div></div>
+      <div class="ph"><img src="assets/S__20291591_0.jpg" alt="連続シューティング中の仲間一覧画面"><div class="cap">実際の画面: 連続記録</div></div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section>
+    <span class="num">毎月のイベント</span>
+    <h2>🎉 シュートフェス</h2>
+    <p>毎月さいごの1週間は「シュートフェス」。チーム全員の打った本数を合計して、みんなで目標達成をめざします。</p>
+    <p class="sub">1人の1本が、そのままチームの1本に。じぶんの練習がチームの力になります。</p>
+    <div class="photos">
+      <div class="ph" style="max-width:480px"><img src="assets/S__20291593_0.jpg" alt="シュートフェスの進み具合メーター画面"><div class="cap">実際の画面: 8月のシュートフェス(全段階達成！)</div></div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section>
+    <span class="num">はじめかた</span>
+    <h2>はじめかたは3ステップ</h2>
+    <div class="steps">
+      <div class="step"><span class="n">1</span><p>チームの公式LINEを友だち追加する</p></div>
+      <div class="step"><span class="n">2</span><p>トークに届くリンクからアプリを開く</p></div>
+      <div class="step"><span class="n">3</span><p>そのまま記録スタート</p></div>
+    </div>
+  </section>
+
+  <footer>
+    シュートログ — 山梨アイセブンが自分たちのために作った練習記録アプリ
+  </footer>
+
+</div>
