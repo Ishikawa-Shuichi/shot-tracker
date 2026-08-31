@@ -1644,7 +1644,7 @@ function computeMonthlyRanking_(shots, ym) {
  * 月末の日に、その月の本数ランキング(5位まで)を個別メッセージで送る。
  * 「毎月◯日」トリガーは月によって最終日がずれるため使えず、毎日チェックする方式にしている。
  */
-function sendMonthlyRankingPost_() {
+function sendMonthlyRankingPost() {
   var todayStr = dateOf_(new Date());
   if (!isLastDayOfMonth_(todayStr)) return;
   var ym = todayStr.slice(0, 7);
@@ -1683,9 +1683,9 @@ function sendMonthlyRankingPost_() {
 /** 手動実行用: 毎日21:30頃にチェックし、月末の日だけ月間ランキングを自動送信するトリガーを設定する(一度だけ実行) */
 function setupMonthlyTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'sendMonthlyRankingPost_') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'sendMonthlyRankingPost') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('sendMonthlyRankingPost_').timeBased().everyDays(1).atHour(21).nearMinute(30).create();
+  ScriptApp.newTrigger('sendMonthlyRankingPost').timeBased().everyDays(1).atHour(21).nearMinute(30).create();
   Logger.log('毎日21:30頃にチェックし、月末だけ月間ランキングを自動送信するトリガーを設定しました');
 }
 
@@ -1714,7 +1714,7 @@ function sendFestKickoff() {
  * weeklyMvpPost()は「今日が属する週」で集計するため月曜以降に実行すると空のランキングになってしまうので使わない。
  * festDateRange_()はまだ月が変わっていない間は直近のフェス週を指すので、そこから対象週を取る。
  */
-function sendFestWeekReportManual_() {
+function sendFestWeekReportManual() {
   var shots = getShots_();
   var range = festDateRange_();
   var byUser = {};
