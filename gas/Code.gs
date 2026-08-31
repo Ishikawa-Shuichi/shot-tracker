@@ -1637,6 +1637,68 @@ function sendFestKickoff() {
   Logger.log(FEST_NAME + '告知を' + targets.length + '人に送信しました');
 }
 
+/** 手動実行用: 週次トリガー未設定のため日曜に自動送信されなかった週(先週=直近のフェス週)の
+ * フェス最終結果+本数ランキングをまとめて送る。1回だけ実行する。
+ * weeklyMvpPost()は「今日が属する週」で集計するため月曜以降に実行すると空のランキングになってしまうので使わない。
+ * festDateRange_()はまだ月が変わっていない間は直近のフェス週を指すので、そこから対象週を取る。
+ */
+function sendFestWeekReportManual_() {
+  var shots = getShots_();
+  var range = festDateRange_();
+  var byUser = {};
+  var teamTotal = 0;
+  shots.forEach(function (s) {
+    if (s.date < range.monday || s.date > range.sunday) return;
+    var u = byUser[s.userId] || (byUser[s.userId] = { name: s.displayName, attempts: 0 });
+    u.name = s.displayName || u.name;
+    u.attempts += s.attempts;
+    teamTotal += s.attempts;
+  });
+  var ranked = Object.keys(byUser).map(function (uid) { return { userId: uid, name: byUser[uid].name, attempts: byUser[uid].attempts }; })
+    .sort(function (a, b) { return b.attempts - a.attempts; });
+
+  var medals = ['🥇', '🥈', '🥉'];
+  var lines = ['📣 先週(' + range.monday + '〜' + range.sunday + ')のシュート本数ランキング'];
+  if (ranked.length) {
+    ranked.slice(0, 3).forEach(function (u, i) { lines.push(medals[i] + ' ' + u.name + ' ' + u.attempts + '本'); });
+    lines.push('');
+    lines.push('チーム合計: ' + teamTotal + '本');
+  } else {
+    lines.push('先週は記録がありませんでした');
+  }
+
+  // festFinalMessageBlock_は「今日が対象週の日曜」の時しか結果を返さない(月曜には使えない)ため、
+  // 同じ文面をgetFestStatus_の値から組み立てる
+  var status = getFestStatus_(null, shots);
+  lines.push('');
+  lines.push('🎉 ' + FEST_NAME + ' 最終結果');
+  lines.push('合計: ' + status.displayTotal + '本(' + status.tierReached + '/' + FEST_TIERS.length + '段階達成)');
+  if (status.tierReached >= FEST_TIERS.length) {
+    lines.push('全段階達成、お疲れさまでした🏆');
+  } else if (festIsRecordWeek_(shots, status.displayTotal)) {
+    lines.push('目標には届きませんでしたが、このチーム合計はこれまでで一番の記録です！お疲れさまでした🎉');
+  } else {
+    lines.push('お疲れさまでした！');
+  }
+  var rankingText = lines.join('\n');
+
+  var attemptsByUser = {};
+  ranked.forEach(function (u) { attemptsByUser[u.userId] = u.attempts; });
+  var memberMap = {};
+  getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
+  uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
+  var allMembers = broadcastTargets_(memberMap, null).map(function (uid) { return { userId: uid, name: memberMap[uid] }; });
+  var failed = [];
+  allMembers.forEach(function (m) {
+    var myAttempts = attemptsByUser[m.userId] || 0;
+    var personal = myAttempts > 0 ? 'あなたは先週 ' + myAttempts + '本 シュートを打ちました！\n' : '';
+    var text = rankingText + '\n\n' + personal + '先週もお疲れさまでした！🏀';
+    if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
+  });
+  if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
+  Logger.log('先週のフェス結果+ランキングを' + allMembers.length + '人に送信しました');
+}
+
 // 今週(月曜〜今日)のシュート本数ランキングを、メンバー1人ずつに個別メッセージで送る。
 // (グループ投稿ではなく個別チャットに送ることで、各自のトーク履歴の上位に来るようにする)
 // 確率は含めない(本数だけなら誰でも上位を狙える)。今週の記録がなければ何もしない。
