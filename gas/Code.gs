@@ -14,6 +14,14 @@ var API_TOKEN = '';
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
 
+// 閲覧専用ホスト: 権限は柊一と同じ(全員のスタッツ閲覧・代理記録など)だが、選手として記録はしないため、
+// ライセンス一覧・ランキング・連続記録・通知の対象には一切含めない。
+var VIEWER_HOST_USER_IDS = [
+  'U6649616e07ce4ed757c851dab596e6b8'  // だいちゃん(代表・早川大史)
+];
+function isViewerHost_(userId) { return VIEWER_HOST_USER_IDS.indexOf(String(userId)) !== -1; }
+function isHost_(userId) { return userId === HOST_USER_ID || isViewerHost_(userId); }
+
 // 週間MVP自動投稿用: Messaging APIチャネルの「チャネルアクセストークン(長期)」。
 // コード貼り替えで消えないよう、値は「プロジェクトの設定 → スクリプト プロパティ」に
 // プロパティ名 LINE_TOKEN で保存する(ここに直接書いてもよいが、貼り替えのたびに消えるので非推奨)。
@@ -36,17 +44,17 @@ var FEST_NAME = 'シュートフェス';
 var FEST_TIERS = [1000, 2000, 3000];
 var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
 var FEST_SUNDAY_MULTIPLIER = 2;  // 3段階目未達のまま日曜を迎えた場合、その日の本数を何倍で加算するか
-// 8/31時点で無料枠が残り50通と少ないため、今日だけ一旦停止に戻す。
-// 9/1に無料枠がリセットされたらfalseに戻す想定(スタッフへの新規共有を今日進めるための一時対応)
-var NOTIFY_LIVE_UNLOCK_PAUSED = true;
-var NOTIFY_TROPHY_GATEWAY_ONLY = true; // trueなら「3日連続」以外のチーム初獲得は通知しない
+// 通常はどちらもfalse(通知する)。無料メッセージ枠が逼迫した時だけtrueにして通数を節約する。
+var NOTIFY_LIVE_UNLOCK_PAUSED = false;
+var NOTIFY_TROPHY_GATEWAY_ONLY = false; // trueなら「3日連続」以外のチーム初獲得は通知しない
 
 // 一斉配信(トロフィー・ライブ解放・フェス通知)の対象から常に外す人。
 // テストアカウント・運営(ホスト)自身・辞退者は無料メッセージ枠を消費する必要がないため。
 var BROADCAST_EXCLUDED_USER_IDS = [
   'U6882c6acc6c7e206fd4baefad8af74e3', // テスト中
   HOST_USER_ID,                        // 柊一(運営)
-  'Ued2c31e2ef57dbac6865029d145fdda8'  // 祥吾
+  'Ued2c31e2ef57dbac6865029d145fdda8', // 祥吾
+  'U6649616e07ce4ed757c851dab596e6b8'  // だいちゃん(代表・閲覧専用ホスト)
 ];
 function broadcastTargets_(memberMap, excludeUserId) {
   return Object.keys(memberMap).filter(function (uid) {
@@ -106,7 +114,7 @@ function doPost(e) {
     var data;
     switch (action) {
       case 'init':        data = actionInit_(body); break;
-      case 'getSpots':    data = { spots: getSpots_(String(body.userId || ''), String(body.userId || '') === HOST_USER_ID) }; break;
+      case 'getSpots':    data = { spots: getSpots_(String(body.userId || ''), isHost_(String(body.userId || ''))) }; break;
       case 'addSpot':     data = actionAddSpot_(body); break;
       case 'updateSpot':  data = actionUpdateSpot_(body); break;
       case 'deleteSpot':  data = actionDeleteSpot_(body); break;
@@ -139,7 +147,7 @@ function doPost(e) {
 function actionInit_(body) {
   var userId = String(body.userId || '');
   var ym = currentYm_();
-  var isHost = !!userId && userId === HOST_USER_ID;
+  var isHost = !!userId && isHost_(userId);
   // ホストには全員分の個人スポットも渡す(代理記録時に相手のマイスポットへ記録できるように)。
   // クライアント側は ownerId を見て「いま記録している対象者の分」だけを表示する。
   var spots = isHost ? getSpots_(userId, true) : getSpots_(userId);
@@ -182,7 +190,7 @@ function allMembers_(shots) {
 // 通知系の宛先は全てbroadcastTargets_でproxy-を除外しているため、このIDにDMが飛ぶことはない。
 function actionRegisterMember_(body) {
   var userId = String(body.userId || '');
-  if (userId !== HOST_USER_ID) throw new Error('メンバーの作成はホストのみ可能です');
+  if (!isHost_(userId)) throw new Error('メンバーの作成はホストのみ可能です');
   var name = String(body.name || '').trim();
   if (!name) throw new Error('名前が空です');
   // 同名の人が既にいれば新規作成せずその人を返す(同一人物の記録が別IDに分裂しないように)
@@ -203,11 +211,11 @@ function actionAddSpot_(body) {
   var userId = String(body.userId || '');
   if (!userId) throw new Error('userId が空です');
   var wantsShared = String(body.scope || 'personal') === 'shared';
-  if (wantsShared && userId !== HOST_USER_ID) throw new Error('共通スポットの追加はホストのみ可能です');
+  if (wantsShared && !isHost_(userId)) throw new Error('共通スポットの追加はホストのみ可能です');
   var scope = wantsShared ? 'shared' : 'personal';
   // ホストは他人のマイスポットへも追加できる(代理記録中にその人専用スポットを作るため)
   var ownerUserId = String(body.ownerUserId || '') || userId;
-  if (ownerUserId !== userId && userId !== HOST_USER_ID) throw new Error('他の人のマイスポットへの追加はホストのみ可能です');
+  if (ownerUserId !== userId && !isHost_(userId)) throw new Error('他の人のマイスポットへの追加はホストのみ可能です');
   var ownerId = scope === 'personal' ? ownerUserId : '';
 
   var sh = getSheet_(SHEET_SPOTS);
@@ -215,7 +223,7 @@ function actionAddSpot_(body) {
   var order = sh.getLastRow(); // ヘッダ含む行数 ≒ 追加順
   sh.appendRow([id, name, x, y, order, true, new Date().toISOString(), scope, ownerId, '']);
   invalidateSpotsCache_();
-  return { spots: getSpots_(userId, userId === HOST_USER_ID) };
+  return { spots: getSpots_(userId, isHost_(userId)) };
 }
 
 // マイスポット用カスタムシチュエーションの入力を掃除する(カンマ区切り文字列or配列を受ける)。
@@ -253,7 +261,7 @@ function actionUpdateSpot_(body) {
         sh.getRange(i + 1, 10).setValue(sanitizeSituations_(body.situations).join(','));
       }
       invalidateSpotsCache_();
-      return { spots: getSpots_(userId, userId === HOST_USER_ID) };
+      return { spots: getSpots_(userId, isHost_(userId)) };
     }
   }
   throw new Error('スポットが見つかりません');
@@ -270,7 +278,7 @@ function actionDeleteSpot_(body) {
       assertSpotEditable_(rows[i], userId);
       sh.getRange(i + 1, 6).setValue(false);
       invalidateSpotsCache_();
-      return { spots: getSpots_(userId, userId === HOST_USER_ID) };
+      return { spots: getSpots_(userId, isHost_(userId)) };
     }
   }
   throw new Error('スポットが見つかりません');
@@ -280,7 +288,7 @@ function actionDeleteSpot_(body) {
 function assertSpotEditable_(row, userId) {
   var scope = row[7] ? String(row[7]) : 'shared';
   var ownerId = row[8] ? String(row[8]) : '';
-  if (userId === HOST_USER_ID) return;
+  if (isHost_(userId)) return;
   if (scope === 'shared') throw new Error('共通スポットの編集・削除はホストのみ可能です');
   if (ownerId !== userId) throw new Error('このスポットを編集・削除する権限がありません');
 }
@@ -292,7 +300,7 @@ function actionRecordShot_(body) {
   var userId = String(body.userId || '').trim();
   var displayName = String(body.displayName || '名無し').trim();
   if (!actingUserId) throw new Error('userId が空です');
-  if (userId !== actingUserId && actingUserId !== HOST_USER_ID) {
+  if (userId !== actingUserId && !isHost_(actingUserId)) {
     throw new Error('他の人の記録を追加する権限がありません');
   }
   var spotId = String(body.spotId || '').trim();
@@ -374,7 +382,7 @@ function actionUpdateShot_(body) {
   for (var i = 1; i < rows.length; i++) {
     if (String(rows[i][0]) !== id) continue;
     var ownerId = String(rows[i][4]);
-    if (ownerId !== actingUserId && actingUserId !== HOST_USER_ID) throw new Error('この記録を編集する権限がありません');
+    if (ownerId !== actingUserId && !isHost_(actingUserId)) throw new Error('この記録を編集する権限がありません');
 
     var makes = body.makes != null ? Math.max(0, Math.floor(Number(body.makes))) : Number(rows[i][7]);
     var attempts = body.attempts != null ? Math.max(0, Math.floor(Number(body.attempts))) : Number(rows[i][8]);
@@ -413,7 +421,7 @@ function actionDeleteShot_(body) {
   for (var i = 1; i < rows.length; i++) {
     if (String(rows[i][0]) !== id) continue;
     var ownerId = String(rows[i][4]);
-    if (ownerId !== actingUserId && actingUserId !== HOST_USER_ID) throw new Error('この記録を削除する権限がありません');
+    if (ownerId !== actingUserId && !isHost_(actingUserId)) throw new Error('この記録を削除する権限がありません');
     sh.deleteRow(i + 1);
     invalidateShotsCache_();
 
@@ -461,7 +469,7 @@ function actionRenameUser_(body) {
 
 function actionGetMyStats_(body) {
   var requesterId = String(body.userId || '');
-  var isHost = requesterId === HOST_USER_ID;
+  var isHost = isHost_(requesterId);
   var rawTarget = String(body.targetUserId || '');
   var isTeam = rawTarget === '__team__';
   if (isTeam && !isHost) throw new Error('この統計を見る権限がありません');
@@ -483,7 +491,7 @@ function actionGetMyStats_(body) {
 function actionGetTeamStats_(body) {
   var ym = String(body.ym || '') || null;
   var requestUserId = String(body.userId || '');
-  var isHost = !!requestUserId && requestUserId === HOST_USER_ID;
+  var isHost = !!requestUserId && isHost_(requestUserId);
   var spotId = String(body.spotId || ''); // '' = 合計(全スポット)
 
   var agg = getTeamAggregate_(ym); // 重い集計部分は短時間キャッシュ済み
@@ -608,7 +616,7 @@ function actionGetTrend_(body) {
   var spotId = String(body.spotId || '');
   var requesterId = String(body.userId || '');
   var targetUserId = String(body.targetUserId || '') || null;
-  var isHost = !!requesterId && requesterId === HOST_USER_ID;
+  var isHost = !!requesterId && isHost_(requesterId);
   if (!isHost && targetUserId !== requesterId) {
     throw new Error('この推移を見る権限がありません');
   }
@@ -648,7 +656,7 @@ function actionGetTrend_(body) {
 function actionGetHistory_(body) {
   var requesterId = String(body.userId || '');
   var targetUserId = String(body.targetUserId || '') || requesterId;
-  if (targetUserId !== requesterId && requesterId !== HOST_USER_ID) {
+  if (targetUserId !== requesterId && !isHost_(requesterId)) {
     throw new Error('この履歴を見る権限がありません');
   }
   var limit = Math.min(200, Math.max(1, Math.floor(Number(body.limit) || 50)));
@@ -898,7 +906,7 @@ function actionGetAllLicenses_(body) {
   uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
   if (!memberMap[requesterId]) memberMap[requesterId] = '自分';
 
-  var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0; });
+  var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0 && !isViewerHost_(uid); });
   var list = ids.map(function (uid) {
     var trophies = getMyTrophies_(uid);
     var total = totalCareerAttempts_(shots, uid);
@@ -1033,6 +1041,8 @@ function actionFestParticipate_(body) {
   var userId = String(body.userId || '');
   var displayName = String(body.displayName || '名無し').trim();
   if (!userId) throw new Error('userId が空です');
+  // 閲覧専用ホストは記録しないため、参加表明でエクストラ目標(+100本/人)だけ増えてしまうのを防ぐ
+  if (isViewerHost_(userId)) return getFestStatus_(userId, getShots_());
   var status = getFestStatus_(userId, getShots_());
   if (!status.enabled || status.mode !== 'extra') throw new Error('エクストラミッションは今は開催されていません');
   if (!status.extra.joined) {
@@ -1139,7 +1149,7 @@ function computeLiveStatus_(shots, userId, spots) {
 // ホスト以外の全員へ通知する(スポット名は伏せない。トロフィーと違い、これは早いもの勝ちの要素ではないため)。
 // ホスト自身の解放は検証や代理記録の動作確認で頻発しがちなためノイズになるので通知しない。
 function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spots) {
-  if (userId === HOST_USER_ID) return;
+  if (isHost_(userId)) return;
   if (NOTIFY_LIVE_UNLOCK_PAUSED) return; // フェス期間中は通数節約のためいったん停止
   try {
     var before = computeLiveStatus_(shotsBefore, userId, spots);
@@ -1275,6 +1285,7 @@ function computeStreak_(shots, userId) {
 function uniqueMembers_(shots) {
   var map = {}; var order = [];
   shots.forEach(function (s) {
+    if (isViewerHost_(s.userId)) return; // 閲覧専用ホストは選手一覧に含めない
     if (!(s.userId in map)) order.push(s.userId);
     map[s.userId] = s.displayName;
   });
@@ -1387,6 +1398,7 @@ function getTeamAggregate_(ym) {
   var byUser = {}; // userId -> {name, spots:{spotId:{m,a}}, total}
   shots.forEach(function (s) {
     if (ym && s.ym !== ym) return;
+    if (isViewerHost_(s.userId)) return; // 閲覧専用ホストの記録(通常は無い)はランキングに出さない
     var u = byUser[s.userId] || (byUser[s.userId] = { userId: s.userId, name: s.displayName, spots: {}, tm: 0, ta: 0, taAll: 0, liveBySit: {} });
     u.name = s.displayName || u.name; // 最新表示名で上書き
     u.taAll += s.attempts; // 本数ランキング用: 個人スポット分もライブ分もすべて合算する(打った本数は打った本数)
@@ -1603,6 +1615,7 @@ function getKnownUsers_() {
   var out = [];
   for (var i = 1; i < rows.length; i++) {
     if (!rows[i][0]) continue;
+    if (isViewerHost_(rows[i][0])) continue; // 閲覧専用ホストは一覧・配信の対象外
     out.push({ userId: String(rows[i][0]), name: String(rows[i][1]) });
   }
   return out;
