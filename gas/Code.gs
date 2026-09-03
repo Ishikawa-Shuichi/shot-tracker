@@ -40,6 +40,11 @@ var SHEET_FEST_PARTICIPANTS = 'FestParticipants';
 // 期間限定(1週間)のチーム協力イベント。上限は設けない(頑張るほど得をする設計を貫く)。
 // 3段階の目標を、シチュエーション・スポットを問わず全員の全記録の合計本数で判定する。
 var FEST_ENABLED = true; // 開催そのものを止めたい月だけfalseにする(通常はtrueのまま自動運用)
+var APP_NAME = 'シュートログ';
+// 送信するLINEメッセージは必ず先頭でアプリ名を名乗る。
+// LINEのトーク一覧は「1行目」がプレビュー表示されるため、名乗りを先頭に置くと
+// メッセージを開かない人にも名前が繰り返し目に入る(名前を覚えてもらうのが目的)。
+function appMsg_(text) { return '【' + APP_NAME + '】' + text; }
 var FEST_NAME = 'シュートフェス';
 var FEST_TIERS = [1000, 2000, 3000];
 var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
@@ -771,7 +776,7 @@ function evaluateTrophies_(userId, displayName, shots) {
       var memberMap = {};
       getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
       uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
-      pushLineMessageBatch_(broadcastTargets_(memberMap, userId), '🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！');
+      pushLineMessageBatch_(broadcastTargets_(memberMap, userId), appMsg_('🏆 ' + displayName + 'さんが誰も発見していないトロフィーを獲得しました！'));
     } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
   }
   return newOnes;
@@ -1105,8 +1110,8 @@ function checkFestTierCrossing_(shotsBefore, shotsAfter) {
       var memberMap = {};
       getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
       uniqueMembers_(shotsAfter).forEach(function (m) { memberMap[m.userId] = m.name; });
-      var text = '🎉 ' + FEST_NAME + '、目標の' + FEST_TIERS[FEST_TIERS.length - 1] + '本を達成しました！\n'
-        + '日曜日は特別なエクストラミッションが解禁されます。お楽しみに🔥';
+      var text = appMsg_('🎉 ' + FEST_NAME + '、目標の' + FEST_TIERS[FEST_TIERS.length - 1] + '本を達成しました！\n'
+        + '日曜日は特別なエクストラミッションが解禁されます。お楽しみに🔥');
       pushLineMessageBatch_(broadcastTargets_(memberMap, null), text);
     } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
   }
@@ -1205,7 +1210,7 @@ function notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shotsAfter, spo
     var memberMap = {};
     getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
     uniqueMembers_(shotsAfter).forEach(function (m) { memberMap[m.userId] = m.name; });
-    var text = '🔥 ' + displayName + 'さんが「' + newSpotNames.join('・') + '」のライブシューティングを解放しました！';
+    var text = appMsg_('🔥 ' + displayName + 'さんが「' + newSpotNames.join('・') + '」のライブシューティングを解放しました！');
     pushLineMessageBatch_(broadcastTargets_(memberMap, userId), text);
   } catch (e) { /* 通知失敗でも保存処理は成功扱い */ }
 }
@@ -1760,7 +1765,7 @@ function sendMonthlyRankingPost() {
     // 0本の人には個人本数に触れない(weeklyMvpPostと同じ方針。送る目的はトーク履歴を上げること)
     var myAttempts = attemptsByUser[m.userId] || 0;
     var personal = myAttempts > 0 ? 'あなたは今月 ' + myAttempts + '本 シュートを打ちました！\n' : '';
-    var text = rankingText + '\n\n' + personal + '今月もお疲れさまでした！🏀';
+    var text = appMsg_(rankingText + '\n\n' + personal + '今月もお疲れさまでした！🏀');
     if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
   });
   if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
@@ -1783,12 +1788,12 @@ function sendFestKickoff() {
   getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
   uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
   var range = festDateRange_();
-  var text = '🎉 ' + FEST_NAME + ' 開催中！(' + range.monday + '〜' + range.sunday + ')\n\n'
+  var text = appMsg_('🎉 ' + FEST_NAME + ' 開催中！(' + range.monday + '〜' + range.sunday + ')\n\n'
     + 'チームみんなのシュート本数を合計して、目標達成を目指します🏀\n'
     + '🥉1段階目 ' + FEST_TIERS[0] + '本\n'
     + '🥈2段階目 ' + FEST_TIERS[1] + '本\n'
     + '🥇3段階目 ' + FEST_TIERS[2] + '本\n\n'
-    + 'アプリを開けば今の進み具合が見られます。みんなでシュートしまくろう🔥';
+    + 'アプリを開けば今の進み具合が見られます。みんなでシュートしまくろう🔥');
   var targets = broadcastTargets_(memberMap, null);
   var failed = [];
   targets.forEach(function (uid) { if (!pushLineMessageTo_(uid, text)) failed.push(memberMap[uid]); });
@@ -1851,7 +1856,7 @@ function sendFestWeekReportManual() {
   allMembers.forEach(function (m) {
     var myAttempts = attemptsByUser[m.userId] || 0;
     var personal = myAttempts > 0 ? 'あなたは先週 ' + myAttempts + '本 シュートを打ちました！\n' : '';
-    var text = rankingText + '\n\n' + personal + '先週もお疲れさまでした！🏀';
+    var text = appMsg_(rankingText + '\n\n' + personal + '先週もお疲れさまでした！🏀');
     if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
   });
   if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
@@ -1960,7 +1965,7 @@ function weeklyMvpPost() {
     // 0本の人には個人本数に触れない(送る目的はトーク履歴を上げることなので、それ以外は言及しない)
     var myAttempts = attemptsByUser[m.userId] || 0;
     var personal = myAttempts > 0 ? 'あなたは今週 ' + myAttempts + '本 シュートを打ちました！\n' : '';
-    var text = rankingText + '\n\n' + personal + '今週もお疲れさまでした！🏀';
+    var text = appMsg_(rankingText + '\n\n' + personal + '今週もお疲れさまでした！🏀');
     if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
   });
   if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
