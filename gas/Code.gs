@@ -80,8 +80,11 @@ var TEAMAGG_CACHE_TTL_SEC = 30;
 
 // Shots(全記録)シートの生データも短時間キャッシュする。記録の保存・更新・削除の直後は
 // 必ずキャッシュを無効化するので、記録した本人にはズレなく即時反映される。
-var SHOTS_CACHE_KEY = 'shots_raw_v1';
-var SHOTS_CACHE_TTL_SEC = 20;
+// v2: 分割保存に変更。CacheServiceは1キー100KBまでで、記録が増えてJSONがそれを超えると
+// 保存が黙って失敗し「毎回シートを全読みする」状態に戻ってしまうため、複数キーに分けて保存する。
+var SHOTS_CACHE_KEY = 'shots_raw_v2';
+var SHOTS_CACHE_TTL_SEC = 120; // 記録の保存・編集時は明示的に消すので、長めでも新しい記録はすぐ反映される
+var SHOTS_CACHE_MAX_CHUNKS = 20;
 
 // 既定スポット(初回のみ自動投入)。x,y はコート図上の位置(0〜100%)。すべて共通(shared)スポット。
 var DEFAULT_SPOTS = [
@@ -848,9 +851,7 @@ function totalPracticeDays_(shots, userId) {
 }
 
 // 連続記録の自己ベスト(現在進行形ではなく、過去の全期間で一番長かった連続日数)
-function computeBestStreak_(shots, userId) {
-  var daySet = {};
-  shots.forEach(function (s) { if (s.userId === userId) daySet[s.date] = true; });
+function bestStreakFromDays_(daySet) {
   var days = Object.keys(daySet).sort();
   var best = 0, cur = 0, prevDate = null;
   days.forEach(function (d) {
@@ -863,6 +864,11 @@ function computeBestStreak_(shots, userId) {
   });
   return best;
 }
+function computeBestStreak_(shots, userId) {
+  var daySet = {};
+  shots.forEach(function (s) { if (s.userId === userId) daySet[s.date] = true; });
+  return bestStreakFromDays_(daySet);
+}
 
 // 称号: 100本以上・スポットごとのしきい値以上を達成したスポットがあれば「(スポット名)のスペシャリスト」。
 // フリースローは90%、スリーポイント(7スポット)は70%、それ以外は70%を基準にする。
@@ -871,13 +877,7 @@ function titleThresholdFor_(spotName) {
   if (spotName === 'フリースロー') return 90;
   return 70; // スリーポイント7スポット・その他共通
 }
-function computeTitle_(spots, shots, userId) {
-  var bySpot = {};
-  shots.forEach(function (s) {
-    if (s.userId !== userId || s.situation) return;
-    var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
-    b.makes += s.makes; b.attempts += s.attempts;
-  });
+function titleFromBySpot_(spots, bySpot) {
   var spotName = {}; spots.forEach(function (sp) { spotName[sp.id] = sp.name; });
   var best = null;
   Object.keys(bySpot).forEach(function (spotId) {
@@ -891,6 +891,15 @@ function computeTitle_(spots, shots, userId) {
     if (!best || margin > best.margin) best = { name: name, pct: p, margin: margin };
   });
   return best ? (best.name + 'のスペシャリスト') : null;
+}
+function computeTitle_(spots, shots, userId) {
+  var bySpot = {};
+  shots.forEach(function (s) {
+    if (s.userId !== userId || s.situation) return;
+    var b = bySpot[s.spotId] || (bySpot[s.spotId] = { makes: 0, attempts: 0 });
+    b.makes += s.makes; b.attempts += s.attempts;
+  });
+  return titleFromBySpot_(spots, bySpot);
 }
 
 // チーム全員分のライセンスを1回でまとめて返す(縦一列スクロールでの一覧表示用)。
@@ -906,24 +915,56 @@ function actionGetAllLicenses_(body) {
   uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
   if (!memberMap[requesterId]) memberMap[requesterId] = '自分';
 
+  // 以前はメンバー1人ごとにトロフィー・目標シートを読み直し(人数×2回のシート読み込み)、
+  // さらに全記録を1人あたり7回走査していて一覧表示に10秒前後かかっていた。
+  // 各シートは1回だけ読んでユーザー別に振り分け、全記録も1回の走査でまとめる。
+  var validTrophy = {}; TROPHY_DEFS.forEach(function (d) { validTrophy[d.id] = true; });
+  var trophyCountBy = {};
+  var trophyRows = getTrophyRows_();
+  for (var t = 1; t < trophyRows.length; t++) {
+    if (!trophyRows[t][0] || !validTrophy[String(trophyRows[t][1])]) continue;
+    var tu = String(trophyRows[t][0]);
+    trophyCountBy[tu] = (trophyCountBy[tu] || 0) + 1;
+  }
+  var goalBy = {};
+  var goalRows = getSheet_(SHEET_GOALS).getDataRange().getValues();
+  for (var g = 1; g < goalRows.length; g++) {
+    goalBy[String(goalRows[g][0])] = {
+      weeklyGoal: Number(goalRows[g][1]) || 0,
+      public: goalRows[g][2] === true || goalRows[g][2] === 'TRUE'
+    };
+  }
+  var today = dateOf_(new Date());
+  var monday = weekKeyOf_(today);
+  var acc = {}; // userId -> {total, days, bySpot(指定なしのみ・称号用), week(今週の本数)}
+  shots.forEach(function (s) {
+    var a = acc[s.userId] || (acc[s.userId] = { total: 0, days: {}, bySpot: {}, week: 0 });
+    a.total += s.attempts; // 本数系は常に全記録(ライブ・マイスポット含む)を数える方針
+    a.days[s.date] = true;
+    if (s.date >= monday && s.date <= today) a.week += s.attempts;
+    if (!s.situation) {
+      var b = a.bySpot[s.spotId] || (a.bySpot[s.spotId] = { makes: 0, attempts: 0 });
+      b.makes += s.makes; b.attempts += s.attempts;
+    }
+  });
+
   var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0 && !isViewerHost_(uid); });
   var list = ids.map(function (uid) {
-    var trophies = getMyTrophies_(uid);
-    var total = totalCareerAttempts_(shots, uid);
-    var goal = getMyGoal_(uid);
+    var a = acc[uid] || { total: 0, days: {}, bySpot: {}, week: 0 };
+    var goal = goalBy[uid] || { weeklyGoal: 0, public: false };
     var item = {
       userId: uid, name: memberMap[uid],
-      trophyCount: trophies.length, trophyTotal: TROPHY_DEFS.length,
-      title: computeTitle_(spots, shots, uid),
-      currentStreak: computeStreak_(shots, uid),
-      bestStreak: computeBestStreak_(shots, uid),
-      level: computeLicenseLevel_(total),
-      totalAttempts: total,
-      totalDays: totalPracticeDays_(shots, uid)
+      trophyCount: trophyCountBy[uid] || 0, trophyTotal: TROPHY_DEFS.length,
+      title: titleFromBySpot_(spots, a.bySpot),
+      currentStreak: streakFromDays_(a.days),
+      bestStreak: bestStreakFromDays_(a.days),
+      level: computeLicenseLevel_(a.total),
+      totalAttempts: a.total,
+      totalDays: Object.keys(a.days).length
     };
     // 自分自身は常に見える。他人は公開設定のときだけ達成率を含める
     if (uid === requesterId || goal.public) {
-      item.goal = { weeklyGoal: goal.weeklyGoal, weekAttempts: weekAttemptsOf_(shots, uid), public: goal.public };
+      item.goal = { weeklyGoal: goal.weeklyGoal, weekAttempts: a.week, public: goal.public };
     }
     return item;
   });
@@ -1271,14 +1312,17 @@ function computeHistory_(spots, shots, userId, limit) {
 }
 
 // 連続練習日数: 今日から(今日まだ記録していなければ昨日から)さかのぼり、記録のある日が何日続いているか
-function computeStreak_(shots, userId) {
-  var days = {};
-  shots.forEach(function (s) { if (s.userId === userId) days[s.date] = true; });
+function streakFromDays_(days) {
   var cur = new Date();
   if (!days[dateOf_(cur)]) cur.setDate(cur.getDate() - 1); // 今日まだ打っていなくても昨日までの連続は生きている
   var streak = 0;
   while (days[dateOf_(cur)]) { streak++; cur.setDate(cur.getDate() - 1); }
   return streak;
+}
+function computeStreak_(shots, userId) {
+  var days = {};
+  shots.forEach(function (s) { if (s.userId === userId) days[s.date] = true; });
+  return streakFromDays_(days);
 }
 
 // 記録が存在する全ユーザーの一覧(ホストの代理記録の対象選択に使用)
@@ -1471,9 +1515,24 @@ function getShots_() {
 // (そうしないとキャッシュ経由で読んだときに元がDate型だったかどうかの区別が失われてしまうため)。
 function getShotsRawRows_() {
   var cache = CacheService.getScriptCache();
-  var cached = cache.get(SHOTS_CACHE_KEY);
-  if (cached) {
-    try { return JSON.parse(cached); } catch (e) { /* 壊れていたら読み直す */ }
+  var meta = cache.get(SHOTS_CACHE_KEY); // 分割数を控えたメタキー
+  if (meta) {
+    var n = Math.min(Number(meta) || 0, SHOTS_CACHE_MAX_CHUNKS);
+    if (n > 0) {
+      var keys = [];
+      for (var k = 0; k < n; k++) keys.push(SHOTS_CACHE_KEY + '_' + k);
+      var parts = cache.getAll(keys);
+      var joined = '';
+      var complete = true;
+      for (var j = 0; j < n; j++) {
+        var p = parts[SHOTS_CACHE_KEY + '_' + j];
+        if (p == null) { complete = false; break; } // 一部だけ期限切れ等 → シートから読み直す
+        joined += p;
+      }
+      if (complete) {
+        try { return JSON.parse(joined); } catch (e) { /* 壊れていたら読み直す */ }
+      }
+    }
   }
   var sh = getSheet_(SHEET_SHOTS);
   var rows = sh.getDataRange().getValues();
@@ -1485,13 +1544,26 @@ function getShotsRawRows_() {
     copy[3] = dateCell_(r[3]);
     return copy;
   });
-  try { cache.put(SHOTS_CACHE_KEY, JSON.stringify(normalized), SHOTS_CACHE_TTL_SEC); } catch (e) { /* サイズ超過などは無視して読み込みは継続 */ }
+  try {
+    var json = JSON.stringify(normalized);
+    // 100KB制限はバイト数換算。日本語(1文字3バイト)混じりでも超えないよう1チャンク6万文字に抑える
+    var CHUNK_CHARS = 60000;
+    var count = Math.ceil(json.length / CHUNK_CHARS) || 1;
+    if (count <= SHOTS_CACHE_MAX_CHUNKS) {
+      var payload = {};
+      for (var c = 0; c < count; c++) payload[SHOTS_CACHE_KEY + '_' + c] = json.substr(c * CHUNK_CHARS, CHUNK_CHARS);
+      cache.putAll(payload, SHOTS_CACHE_TTL_SEC);
+      cache.put(SHOTS_CACHE_KEY, String(count), SHOTS_CACHE_TTL_SEC); // メタは最後に書く(揃った状態しか読ませない)
+    }
+  } catch (e) { /* キャッシュ保存に失敗しても読み込みは継続 */ }
   return normalized;
 }
 
 // 記録の保存・更新・削除・表示名変更の直後に呼び、古いキャッシュを消して次回すぐ最新化されるようにする
 function invalidateShotsCache_() {
-  CacheService.getScriptCache().remove(SHOTS_CACHE_KEY);
+  var keys = [SHOTS_CACHE_KEY];
+  for (var i = 0; i < SHOTS_CACHE_MAX_CHUNKS; i++) keys.push(SHOTS_CACHE_KEY + '_' + i);
+  CacheService.getScriptCache().removeAll(keys);
 }
 
 // スプレッドシートが "2026-07" のような文字列を日付型に自動変換してしまうことがあるため、

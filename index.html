@@ -852,6 +852,13 @@ function saveBootCache(d){
   }catch(e){ /* 容量超過等は無視(キャッシュなしでも動く) */ }
 }
 
+// チーム/ライセンスタブも起動画面と同じ「前回データを即表示→裏で最新化」方式にする(体感ラグ削減)。
+// 応答順の入れ替わりで古いデータが後から画面を上書きしないよう、リクエスト連番で最後の要求だけを反映する
+var TAB_CACHE_PREFIX = 'tabCache_v1_';
+var tabLoadSeq = { team: 0, license: 0 };
+function readTabCache(key){ try{ return JSON.parse(localStorage.getItem(TAB_CACHE_PREFIX+key) || 'null'); }catch(e){ return null; } }
+function writeTabCache(key, d){ try{ localStorage.setItem(TAB_CACHE_PREFIX+key, JSON.stringify(d)); }catch(e){ /* 容量超過等は無視 */ } }
+
 function applyUserHeader(){
   var nameOverride = localStorage.getItem('displayNameOverride_' + state.user.userId);
   if(nameOverride) state.user.displayName = nameOverride;
@@ -1672,8 +1679,21 @@ var LEVEL_META = {
   gold:   { label: 'Lv.4', color: '#f5c518' }
 };
 async function loadLicense(){
-  var d = await api('getAllLicenses', { userId: state.user.userId });
+  var seq = ++tabLoadSeq.license;
+  var key = 'license_' + state.user.userId;
+  var cached = readTabCache(key);
+  if(cached) renderLicenseList(cached);
+  var d;
+  try{
+    d = await api('getAllLicenses', { userId: state.user.userId });
+  }catch(e){
+    if(seq === tabLoadSeq.license && cached) toast('📴 最新のライセンスを取得できません(前回のデータを表示中)');
+    if(!cached) throw e;
+    return;
+  }
+  if(seq !== tabLoadSeq.license) return; // その後に始まった読み込みがあれば、この(古い)応答は反映しない
   renderLicenseList(d.licenses);
+  writeTabCache(key, d.licenses);
 }
 function renderLicenseList(list){
   var host = document.getElementById('licenseList');
@@ -2118,38 +2138,71 @@ function renderStreakCard(streaks){
 async function loadTeam(){
   document.getElementById('teamMeOnly').classList.toggle('hidden', state.isHost);
   document.getElementById('teamHostView').classList.toggle('hidden', !state.isHost);
+  var seq = ++tabLoadSeq.team;
   if(state.isHost){
     var liveSituation = document.getElementById('teamLiveSituationSel').value;
-    state.teamData = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, situation: liveSituation });
-    renderStreakCard(state.teamData.streaks);
-    fillUserSelector(state.teamData.users);
-    renderTeamView();
-    renderTeamCount();
-    renderPctRankTable('teamTotalPctBody', state.teamData.threePointRanking);
-    document.getElementById('teamFtHint').textContent = state.teamData.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
-    renderPctRankTable('teamFtBody', state.teamData.freeThrowRanking);
-    // カードの表示可否は「チーム全体でこれまでに一度でもライブ記録があるか」で決める(選択中のシチュエーションに
-    // 記録がまだ無くても、セレクタごと消えて選び直せなくならないように)
-    fillTeamLiveSituationSelector(state.teamData.liveSituations || []);
-    document.getElementById('teamLiveCard').classList.toggle('hidden', !state.teamData.liveHasAny);
-    document.getElementById('teamLiveHint').textContent = liveSituation ? liveSituation+'のみ' : '全シチュエーション合計';
-    renderPctRankTable('teamLiveBody', state.teamData.liveRanking || []);
+    var key = 'team_h_' + state.user.userId + '_' + (state.ym||'all') + '_' + liveSituation;
+    var cached = readTabCache(key);
+    if(cached) renderTeamHost(cached);
+    var d;
+    try{
+      d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, situation: liveSituation });
+    }catch(e){
+      if(seq === tabLoadSeq.team && cached) toast('📴 最新のランキングを取得できません(前回のデータを表示中)');
+      if(!cached) throw e;
+      return;
+    }
+    if(seq !== tabLoadSeq.team) return; // その後に始まった読み込みがあれば、この(古い)応答は反映しない
+    renderTeamHost(d);
+    writeTabCache(key, d);
   }else{
     var spotId = document.getElementById('teamSpotSelMe').value;
-    var d = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
-    renderStreakCard(d.streaks);
-    // シュート本数ランキングだけは全員分を公開
-    var countRows = d.countRanking.map(function(u){ return { name:u.name, attempts:u.attempts }; });
-    renderRankTable('myCountRankBody', countRows, function(r){ return r.attempts; }, '本数');
-    // それ以外は自分の順位と1位の人だけ
-    renderMyRankWithTop('myPctRankBody', d.pctRank);
-    renderMyRankWithTop('myTotalPctRankBody', d.threePointRank);
-    document.getElementById('myFtHint').textContent = d.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
-    renderMyRankWithTop('myFtRankBody', d.freeThrowRank);
-    // ライブは解放者にだけ欄ごと出す(liveRankはサーバーが解放者にしか返さない)
-    document.getElementById('myLiveRankCard').classList.toggle('hidden', !d.liveRank);
-    if(d.liveRank) renderMyRankWithTop('myLiveRankBody', d.liveRank);
+    var key2 = 'team_m_' + state.user.userId + '_' + (state.ym||'all') + '_' + spotId;
+    var cached2 = readTabCache(key2);
+    if(cached2) renderTeamMine(cached2);
+    var d2;
+    try{
+      d2 = await api('getTeamStats', { ym: state.ym, userId: state.user.userId, spotId: spotId });
+    }catch(e){
+      if(seq === tabLoadSeq.team && cached2) toast('📴 最新のランキングを取得できません(前回のデータを表示中)');
+      if(!cached2) throw e;
+      return;
+    }
+    if(seq !== tabLoadSeq.team) return;
+    renderTeamMine(d2);
+    writeTabCache(key2, d2);
   }
+}
+function renderTeamHost(d){
+  state.teamData = d;
+  renderStreakCard(state.teamData.streaks);
+  fillUserSelector(state.teamData.users);
+  renderTeamView();
+  renderTeamCount();
+  renderPctRankTable('teamTotalPctBody', state.teamData.threePointRanking);
+  document.getElementById('teamFtHint').textContent = state.teamData.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
+  renderPctRankTable('teamFtBody', state.teamData.freeThrowRanking);
+  // カードの表示可否は「チーム全体でこれまでに一度でもライブ記録があるか」で決める(選択中のシチュエーションに
+  // 記録がまだ無くても、セレクタごと消えて選び直せなくならないように)
+  fillTeamLiveSituationSelector(state.teamData.liveSituations || []);
+  document.getElementById('teamLiveCard').classList.toggle('hidden', !state.teamData.liveHasAny);
+  var liveSituation = document.getElementById('teamLiveSituationSel').value;
+  document.getElementById('teamLiveHint').textContent = liveSituation ? liveSituation+'のみ' : '全シチュエーション合計';
+  renderPctRankTable('teamLiveBody', state.teamData.liveRanking || []);
+}
+function renderTeamMine(d){
+  renderStreakCard(d.streaks);
+  // シュート本数ランキングだけは全員分を公開
+  var countRows = d.countRanking.map(function(u){ return { name:u.name, attempts:u.attempts }; });
+  renderRankTable('myCountRankBody', countRows, function(r){ return r.attempts; }, '本数');
+  // それ以外は自分の順位と1位の人だけ
+  renderMyRankWithTop('myPctRankBody', d.pctRank);
+  renderMyRankWithTop('myTotalPctRankBody', d.threePointRank);
+  document.getElementById('myFtHint').textContent = d.freeThrowSpotId ? '' : '「フリースロー」という名前のスポットがまだありません';
+  renderMyRankWithTop('myFtRankBody', d.freeThrowRank);
+  // ライブは解放者にだけ欄ごと出す(liveRankはサーバーが解放者にしか返さない)
+  document.getElementById('myLiveRankCard').classList.toggle('hidden', !d.liveRank);
+  if(d.liveRank) renderMyRankWithTop('myLiveRankBody', d.liveRank);
 }
 function renderPctRankTable(hostId, rows){
   var host=document.getElementById(hostId);
