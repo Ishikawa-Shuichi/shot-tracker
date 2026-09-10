@@ -174,6 +174,7 @@ function actionInit_(body) {
     myStats: computeMyStats_(spotsMine, shots, userId, 'month', ym),
     history: computeHistory_(spots, shots, userId, 20),
     streak: computeStreak_(shots, userId),
+    bestStreak: computeBestStreak_(shots, userId), // 途切れて戻ってきた時に「自己ベストだった」と伝える判定用(フロント側で前回値と比較)
     myTrophies: getMyTrophies_(userId),
     trophyTotal: TROPHY_DEFS.length,
     myGoal: getMyGoal_(userId),

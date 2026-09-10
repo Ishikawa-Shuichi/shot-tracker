@@ -852,6 +852,18 @@ function saveBootCache(d){
   }catch(e){ /* 容量超過等は無視(キャッシュなしでも動く) */ }
 }
 
+// 連続記録が途切れて戻ってきた時、それが自己ベストだったなら起動時に一言だけ伝える
+// (途切れた瞬間を「失った」で終わらせない。Apple Fitnessの「途切れた時に最長記録を称える」設計を踏襲)。
+// 前回開いた時の連続(端末に控えたキャッシュ)と今回を比べる: 前回>=3(連続と呼べる長さ)・今回0(途切れた)・前回==最長(自己ベスト)。
+// キャッシュは最新化のたびに上書きされるので、この一言は自然に1回しか出ない。毎日「更新!」と出す方式は演出の価値を下げるので採らない。
+function celebrateBestStreakIfBroken(prev, d){
+  if(!prev || typeof prev.streak !== 'number') return;
+  var was = prev.streak, now = d.streak || 0, best = d.bestStreak || 0;
+  if(was >= 3 && now === 0 && was === best){
+    toast('🔥 前回の' + was + '日連続、自己ベストです！今日からまた積み上げましょう', 6000);
+  }
+}
+
 // チーム/ライセンスタブも起動画面と同じ「前回データを即表示→裏で最新化」方式にする(体感ラグ削減)。
 // 応答順の入れ替わりで古いデータが後から画面を上書きしないよう、リクエスト連番で最後の要求だけを反映する
 var TAB_CACHE_PREFIX = 'tabCache_v1_';
@@ -957,6 +969,7 @@ if(bootCache && bootCache.user && bootCache.data){
     var d = (earlyFetch && !userChanged) ? await earlyFetch : await api('init', { userId: state.user.userId });
     if(d && d.__error) throw d.__error;
     applyBootData(d);
+    celebrateBestStreakIfBroken((bootCache && !userChanged) ? bootCache.data : null, d); // キャッシュを上書きする前に前回値と比べる
     saveBootCache(d);
     trySyncPending(); // 通信できているタイミングで、未送信キューがあれば送っておく
   }catch(e){
@@ -2685,8 +2698,8 @@ function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&am
 function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
 function genId(){ return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10); }
 var toastTimer;
-function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show');},1800); }
+function toast(msg, ms){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(function(){t.classList.remove('show');}, ms || 1800); }
 </script>
 </body>
 </html>
