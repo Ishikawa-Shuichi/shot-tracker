@@ -49,9 +49,11 @@ var FEST_NAME = 'シュートフェス';
 var FEST_TIERS = [1000, 2000, 3000];
 var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
 var FEST_SUNDAY_MULTIPLIER = 2;  // 3段階目未達のまま日曜を迎えた場合、その日の本数を何倍で加算するか
-// 通常はどちらもfalse(通知する)。無料メッセージ枠が逼迫した時だけtrueにして通数を節約する。
-var NOTIFY_LIVE_UNLOCK_PAUSED = false;
-var NOTIFY_TROPHY_GATEWAY_ONLY = false; // trueなら「3日連続」以外のチーム初獲得は通知しない
+// 通常はすべてfalse(通知する)。無料メッセージ枠が逼迫した時だけtrueにして通数を節約する。
+// 2026-09-10: 有料化の目処が立つまで、トロフィー・ライブ解放の通知はどちらも停止中。
+var NOTIFY_LIVE_UNLOCK_PAUSED = true;
+var NOTIFY_TROPHY_PAUSED = true;        // trueならトロフィーのチーム初獲得通知を完全に止める
+var NOTIFY_TROPHY_GATEWAY_ONLY = false; // (再開後の調整用) trueならゲートウェイ以外のチーム初獲得は通知しない
 
 // 一斉配信(トロフィー・ライブ解放・フェス通知)の対象から常に外す人。
 // テストアカウント・運営(ホスト)自身・辞退者は無料メッセージ枠を消費する必要がないため。
@@ -672,13 +674,37 @@ function actionGetHistory_(body) {
 }
 
 // ===== トロフィー(実績) ==========================================
-// 隠し要素。獲得するまで存在を見せない。最初の1個は必ず「3日連続シューティング」になるよう、
-// それを獲得するまで他のトロフィーは判定しない(簡単なもので先に開いて興ざめしないように)。
+// 隠し要素。獲得するまで存在を見せない。最初の1個は必ずゲートウェイ(通算3日)になるよう、
+// 1個も持っていない間は他のトロフィーを判定しない(簡単なもので先に開いて興ざめしないように)。
 // チーム内で誰も獲得したことがないトロフィーを解放した瞬間は、全員に「誰かが新しいトロフィーを解放した」
 // ことだけをLINE通知する(内容は秘密。会話のきっかけになるように)。
+// notify:false のものは「発見」ではなく積み上げの節目なので、チーム初でも通知しない
+// (段階が多いため、通知すると導入直後に一斉配信が連発して無料枠を食い潰す)。
+// tier(銅銀金)は「難しさ」を表す。同じファミリー内に銅が複数あってよい(PlayStation方式)。
 var SHEET_TROPHIES = 'Trophies';
-var TROPHY_GATEWAY_ID = 'streak_3';
+var TROPHY_GATEWAY_ID = 'days_3';
 var TROPHY_DEFS = [
+  // 通算記録日数(連続でなくてよい): 週2,3回の練習でも確実に進む。days_3がゲートウェイ
+  { id: 'days_3',      name: '通算3日シューティング',       tier: 'bronze', notify: false },
+  { id: 'days_5',      name: '通算5日シューティング',       tier: 'bronze', notify: false },
+  { id: 'days_10',     name: '通算10日シューティング',      tier: 'silver', notify: false },
+  { id: 'days_25',     name: '通算25日シューティング',      tier: 'silver', notify: false },
+  { id: 'days_50',     name: '通算50日シューティング',      tier: 'gold',   notify: false },
+  { id: 'days_100',    name: '通算100日シューティング',     tier: 'gold',   notify: false },
+  // 累計本数(通算。月をまたいでもリセットされない)
+  { id: 'total_100',   name: '累計100本',                   tier: 'bronze', notify: false },
+  { id: 'total_500',   name: '累計500本',                   tier: 'bronze', notify: false },
+  { id: 'total_1000',  name: '累計1000本',                  tier: 'silver', notify: false },
+  { id: 'total_3000',  name: '累計3000本',                  tier: 'silver', notify: false },
+  { id: 'total_5000',  name: '累計5000本',                  tier: 'gold',   notify: false },
+  { id: 'total_10000', name: '累計10000本',                 tier: 'gold',   notify: false },
+  // 週連続(月〜日に1回でも記録した週が何週続いたか): 週2,3回の選手の「連続記録」。雨1日では切れない
+  { id: 'weeks_2',     name: '2週連続シューティング',       tier: 'bronze', notify: false },
+  { id: 'weeks_4',     name: '4週連続シューティング',       tier: 'bronze', notify: false },
+  { id: 'weeks_8',     name: '8週連続シューティング',       tier: 'silver', notify: false },
+  { id: 'weeks_12',    name: '12週連続シューティング',      tier: 'silver', notify: false },
+  { id: 'weeks_26',    name: '26週連続シューティング',      tier: 'gold',   notify: false },
+  // 日連続
   { id: 'streak_3',    name: '3日連続シューティング',        tier: 'bronze' },
   { id: 'streak_7',    name: '7日連続シューティング',        tier: 'silver' },
   { id: 'streak_30',   name: '30日連続シューティング',       tier: 'gold'   },
@@ -712,6 +738,18 @@ function trophyConditionMet_(def, userId, shots, spots) {
     var totalL = 0;
     shots.forEach(function (s) { if (s.userId === userId && layupIds[s.spotId]) totalL += s.attempts; });
     return totalL >= needL;
+  }
+  if (def.id.indexOf('days_') === 0) {
+    var needD = Number(def.id.split('_')[1]);
+    return totalPracticeDays_(shots, userId) >= needD;
+  }
+  if (def.id.indexOf('total_') === 0) {
+    var needT = Number(def.id.split('_')[1]);
+    return totalCareerAttempts_(shots, userId) >= needT;
+  }
+  if (def.id.indexOf('weeks_') === 0) {
+    var needW = Number(def.id.split('_')[1]);
+    return computeWeekStreak_(shots, userId) >= needW;
   }
   if (def.id === 'perfect_10') {
     return shots.some(function (s) { return s.userId === userId && s.attempts >= 10 && s.makes === s.attempts; });
@@ -752,9 +790,11 @@ function evaluateTrophies_(userId, displayName, shots) {
       if (String(rows[i][0]) === userId) mine[String(rows[i][1])] = true;
     }
     var spots = getSpots_(null, true);
-    // ゲート: 最初のトロフィーは必ず3日連続。未獲得の間は他を判定しない。
-    // 獲得したその保存では3日連続だけを付与し、他は次の保存から判定する(初解放の瞬間を薄めない)
-    var defsToCheck = mine[TROPHY_GATEWAY_ID]
+    // ゲート: 最初のトロフィーは必ずゲートウェイ(通算3日)。1個も持っていない間は他を判定しない。
+    // 獲得したその保存ではゲートウェイだけを付与し、他は次の保存から判定する(初解放の瞬間を薄めない)。
+    // 通過判定は「1個でも持っているか」にして、ゲートウェイのIDを変えても既に持っている人が影響を受けないようにする
+    var passedGate = Object.keys(mine).length > 0;
+    var defsToCheck = passedGate
       ? TROPHY_DEFS
       : TROPHY_DEFS.filter(function (d) { return d.id === TROPHY_GATEWAY_ID; });
     var sh = getSheet_(SHEET_TROPHIES);
@@ -763,14 +803,14 @@ function evaluateTrophies_(userId, displayName, shots) {
       if (!trophyConditionMet_(def, userId, shots, spots)) return;
       sh.appendRow([userId, def.id, new Date().toISOString(), displayName]);
       newOnes.push({ id: def.id, name: def.name, tier: def.tier });
-      // フェス期間中は通数節約のため、3日連続(ゲートウェイ)以外のチーム初獲得では通知しない
-      if (!teamHas[def.id] && (!NOTIFY_TROPHY_GATEWAY_ONLY || def.id === TROPHY_GATEWAY_ID)) anyWorldFirst = true;
+      // 積み上げ系(notify:false)は通知しない。GATEWAY_ONLYがtrueならゲートウェイ以外も通知しない
+      if (!teamHas[def.id] && def.notify !== false && (!NOTIFY_TROPHY_GATEWAY_ONLY || def.id === TROPHY_GATEWAY_ID)) anyWorldFirst = true;
       teamHas[def.id] = true;
     });
   } finally {
     lock.releaseLock();
   }
-  if (anyWorldFirst) {
+  if (anyWorldFirst && !NOTIFY_TROPHY_PAUSED) {
     // 内容は伏せて「誰かが何かを解放した」ことだけ全員(本人以外)に伝える
     try {
       var memberMap = {};
@@ -1328,6 +1368,23 @@ function computeStreak_(shots, userId) {
   var days = {};
   shots.forEach(function (s) { if (s.userId === userId) days[s.date] = true; });
   return streakFromDays_(days);
+}
+
+// 週連続: 月〜日の間に1回でも記録した週が、今週(まだ無ければ先週)から遡って何週続いているか。
+// 今週まだ記録がなくても先週までの連続は生きている(日の連続記録と同じ考え方)。
+function computeWeekStreak_(shots, userId) {
+  var weeks = {};
+  shots.forEach(function (s) { if (s.userId === userId) weeks[weekKeyOf_(s.date)] = true; });
+  var cur = weekKeyOf_(dateOf_(new Date()));
+  if (!weeks[cur]) cur = shiftWeek_(cur, -1);
+  var streak = 0;
+  while (weeks[cur]) { streak++; cur = shiftWeek_(cur, -1); }
+  return streak;
+}
+function shiftWeek_(mondayStr, n) {
+  var parts = mondayStr.split('-');
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]) + 7 * n);
+  return dateOf_(d);
 }
 
 // 記録が存在する全ユーザーの一覧(ホストの代理記録の対象選択に使用)
