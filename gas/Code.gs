@@ -712,14 +712,21 @@ var TROPHY_DEFS = [
   // 日連続
   { id: 'streak_3',    name: '3日連続シューティング',        tier: 'bronze' },
   { id: 'streak_7',    name: '7日連続シューティング',        tier: 'silver' },
+  { id: 'streak_14',   name: '14日連続シューティング',       tier: 'silver' },
+  { id: 'streak_21',   name: '21日連続シューティング',       tier: 'silver' },
   { id: 'streak_30',   name: '30日連続シューティング',       tier: 'gold'   },
   { id: 'month_1000',  name: '月間1000本',                   tier: 'bronze' },
+  { id: 'month_2000',  name: '月間2000本',                   tier: 'bronze' },
+  { id: 'month_3000',  name: '月間3000本',                   tier: 'silver' },
   { id: 'month_10000', name: '月間10000本',                  tier: 'silver' },
   { id: 'month_20000', name: '月間20000本',                  tier: 'gold'   },
   { id: 'layup_10',    name: 'レイアップ10本',               tier: 'bronze' },
   { id: 'layup_100',   name: 'レイアップ100本',              tier: 'silver' },
   { id: 'layup_1000',  name: 'レイアップ1000本',             tier: 'gold'   },
-  { id: 'perfect_10',  name: 'パーフェクト(1回の記録で10本以上100%)', tier: 'silver' }
+  { id: 'perfect_5',   name: 'パーフェクト(1回の記録で5本以上100%)',  tier: 'bronze' },
+  { id: 'perfect_10',  name: 'パーフェクト(1回の記録で10本以上100%)', tier: 'silver' },
+  { id: 'perfect_20',  name: 'パーフェクト(1回の記録で20本以上100%)', tier: 'silver' },
+  { id: 'perfect_30',  name: 'パーフェクト(1回の記録で30本以上100%)', tier: 'gold'   }
 ];
 
 // トロフィーのファミリー(段階の系列)。idの先頭(days_ / total_ ...)で分類し、この順に表示する。
@@ -815,8 +822,10 @@ function trophyConditionMet_(def, userId, shots, spots) {
     var needW = Number(def.id.split('_')[1]);
     return computeWeekStreak_(shots, userId) >= needW;
   }
-  if (def.id === 'perfect_10') {
-    return shots.some(function (s) { return s.userId === userId && s.attempts >= 10 && s.makes === s.attempts; });
+  if (def.id.indexOf('perfect_') === 0) {
+    // 1回の記録でN本以上打って全部入った(パーフェクト)。段階は本数
+    var needP = Number(def.id.split('_')[1]);
+    return shots.some(function (s) { return s.userId === userId && s.attempts >= needP && s.makes === s.attempts; });
   }
   return false;
 }
