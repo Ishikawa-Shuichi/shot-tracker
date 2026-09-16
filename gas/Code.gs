@@ -166,6 +166,7 @@ function actionInit_(body) {
     ? spots.filter(function (sp) { return sp.scope !== 'personal' || sp.ownerId === userId; })
     : spots;
   var shots = getShots_();
+  var myTrophies = getMyTrophies_(userId);
   var result = {
     spots: spots,
     ym: ym,
@@ -175,8 +176,9 @@ function actionInit_(body) {
     history: computeHistory_(spots, shots, userId, 20),
     streak: computeStreak_(shots, userId),
     bestStreak: computeBestStreak_(shots, userId), // 途切れて戻ってきた時に「自己ベストだった」と伝える判定用(フロント側で前回値と比較)
-    myTrophies: getMyTrophies_(userId),
+    myTrophies: myTrophies,
     trophyTotal: TROPHY_DEFS.length,
+    trophyFamilies: trophyFamiliesFor_(userId, shots, spots, myTrophies), // ファミリー別の獲得数と「次まであと◯」
     myGoal: getMyGoal_(userId),
     // 仲間のライセンス閲覧(誰でも誰の分でも見られる)用の選択肢として、ホスト以外にも渡す
     members: allMembers_(shots),
@@ -378,6 +380,8 @@ function actionRecordShot_(body) {
     streak: computeStreak_(shots, actingUserId),
     newTrophies: newTrophies,
     trophyOwner: userId,
+    // 記録の持ち主の進み具合(新規獲得が無くても「あと◯」は毎回変わるので常に返す。クライアントは持ち主本人の画面でだけ反映)
+    trophyFamilies: trophyFamiliesFor_(userId, shots, spots, getMyTrophies_(userId)),
     // フェスカードは「画面を操作している人」の視点で表示する(「あなたの貢献」が代理対象者の本数に
     // 化けないように)。段階の判定・通知はチーム全体なので、この引数の違いには影響されない。
     fest: getFestStatus_(actingUserId, shots),
@@ -717,6 +721,65 @@ var TROPHY_DEFS = [
   { id: 'layup_1000',  name: 'レイアップ1000本',             tier: 'gold'   },
   { id: 'perfect_10',  name: 'パーフェクト(1回の記録で10本以上100%)', tier: 'silver' }
 ];
+
+// トロフィーのファミリー(段階の系列)。idの先頭(days_ / total_ ...)で分類し、この順に表示する。
+// unitは「次の段階まであと◯」の単位。無いファミリー(パーフェクト等)は残数を出さない。
+var TROPHY_FAMILIES = [
+  { key: 'days',    name: '通算日数',   unit: '日' },
+  { key: 'total',   name: '累計本数',   unit: '本' },
+  { key: 'weeks',   name: '週連続',     unit: '週' },
+  { key: 'streak',  name: '日連続',     unit: '日' },
+  { key: 'month',   name: '月間本数',   unit: '本' },
+  { key: 'layup',   name: 'レイアップ', unit: '本' },
+  { key: 'perfect', name: 'パーフェクト' }
+];
+function trophyFamilyOf_(id) { return String(id).split('_')[0]; }
+
+// ファミリーごとの「現在の実績値」(段階のしきい値と比べて「あと◯」を出すために使う)
+function trophyFamilyValue_(key, userId, shots, spots) {
+  if (key === 'days')   return totalPracticeDays_(shots, userId);
+  if (key === 'total')  return totalCareerAttempts_(shots, userId);
+  if (key === 'weeks')  return computeWeekStreak_(shots, userId);
+  if (key === 'streak') return computeStreak_(shots, userId);
+  if (key === 'month') {
+    var ym = currentYm_(), t = 0;
+    shots.forEach(function (s) { if (s.userId === userId && s.ym === ym) t += s.attempts; });
+    return t;
+  }
+  if (key === 'layup') {
+    var ids = {}; spots.forEach(function (sp) { if (sp.name.indexOf('レイアップ') !== -1) ids[sp.id] = true; });
+    var tl = 0; shots.forEach(function (s) { if (s.userId === userId && ids[s.spotId]) tl += s.attempts; });
+    return tl;
+  }
+  return null;
+}
+
+// トロフィー画面のファミリー別の進み具合。
+// 1個でも持っているファミリーだけ名前・獲得数・「次の段階まであと◯」を返す。
+// まだ1個も無いファミリーは名前も中身も返さず、個数だけ返す(クライアントが「まだ見つけていない◯個」とまとめて出す。
+// 発見の驚きはそこで守り、走り出したファミリーには手応えを見せる)。
+function trophyFamiliesFor_(userId, shots, spots, myTrophies) {
+  var mine = {}; (myTrophies || []).forEach(function (t) { mine[t.id] = true; });
+  return TROPHY_FAMILIES.map(function (fam) {
+    var defs = TROPHY_DEFS.filter(function (d) { return trophyFamilyOf_(d.id) === fam.key; });
+    var earned = defs.filter(function (d) { return mine[d.id]; }).length;
+    if (!earned) return { hidden: true, total: defs.length, earned: 0 };
+    var out = { key: fam.key, name: fam.name, total: defs.length, earned: earned };
+    if (!fam.unit) return out;
+    // 次の段階 = まだ持っていない中で一番しきい値が小さいもの
+    var next = null;
+    defs.forEach(function (d) {
+      if (mine[d.id]) return;
+      var need = Number(d.id.split('_')[1]);
+      if (!isNaN(need) && (next === null || need < next)) next = need;
+    });
+    if (next !== null) {
+      var value = trophyFamilyValue_(fam.key, userId, shots, spots);
+      if (value !== null) { out.remain = Math.max(0, next - value); out.unit = fam.unit; }
+    }
+    return out;
+  });
+}
 
 // ユーザーの現在の実績値からトロフィー条件を満たすかを判定する
 function trophyConditionMet_(def, userId, shots, spots) {

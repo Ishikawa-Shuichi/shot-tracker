@@ -573,6 +573,7 @@ var state = {
   pendingShots: [],          // オフライン等でまだサーバーに送れていない新規記録のキュー
   pendingOps: [],            // オフライン時の送信済み記録への編集/削除操作のキュー
   myTrophies: [],            // 獲得済みトロフィー(最初の1個を取るまで実績タブ自体を隠す)
+  trophyFamilies: [],        // ファミリー別の獲得数と「次の段階まであと◯」(サーバー計算。無ければ従来の平らな一覧で出す)
   trophyTotal: 0,            // トロフィーの総数(未獲得分を「？？？」で見せる用)
   historyItems: [],          // 直近取得した(未送信分を含まない)履歴。未送信分と合成して表示するために保持
   syncing: false              // 未送信キューを送信中かどうか(二重実行防止)
@@ -894,6 +895,7 @@ function applyBootData(d, fromCache){
   applyHistory(d.history);
   updateStreakBadge(d.streak || 0);
   state.myTrophies = d.myTrophies || [];
+  state.trophyFamilies = d.trophyFamilies || [];
   state.trophyTotal = d.trophyTotal || 0;
   state.myGoal = d.myGoal || { weeklyGoal: 0, public: false };
   renderTrophyNav();
@@ -1440,6 +1442,8 @@ onTap(document.getElementById('recSave'), async function(){
       if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
       else{ applyHistory(res.history); }
       renderCourt();
+      // 進み具合(あと◯)は新規獲得が無くても毎回変わる。自分の記録の時だけ反映する(代理記録では相手の値なので使わない)
+      if(res.trophyFamilies && res.trophyOwner === state.user.userId) state.trophyFamilies = res.trophyFamilies;
       // トロフィーの新規獲得(記録の持ち主が対象。代理記録なら相手の獲得としてホスト画面でも祝う)
       if(res.newTrophies && res.newTrophies.length){
         if(res.trophyOwner === state.user.userId){
@@ -1866,23 +1870,56 @@ function renderTrophyNav(){
   var btn = document.getElementById('navTrophyBtn');
   if(btn) btn.classList.toggle('hidden', !(state.myTrophies && state.myTrophies.length));
 }
+function trophyRow(t){
+  var el=document.createElement('div'); el.className='listitem';
+  el.innerHTML='<span>'+(TIER_EMOJI[t.tier]||'🏆')+' '+esc(t.name)+'</span>'
+    +'<span class="muted" style="font-size:12px">'+String(t.earnedAt||'').slice(0,10)+'</span>';
+  return el;
+}
+function trophyHiddenRow(text){
+  var q=document.createElement('div'); q.className='listitem';
+  q.innerHTML='<span class="muted">❓ '+esc(text)+'</span>';
+  return q;
+}
+// ファミリー(段階の系列)ごとにまとめて見せる。
+// 走り出したファミリーは「獲得数/段階数」と「次の段階まであと◯」で手応えを出し、
+// まだ1個も無いファミリーは名前も出さず「まだ見つけていない◯個」にまとめる(発見の驚きはそこで守る)。
+// 平らな❓の一覧だと、数を増やすほど「近づいている感」が消えて逆効果になるため。
 function renderTrophyTab(){
   var host = document.getElementById('trophyList'); host.innerHTML='';
   var mine = state.myTrophies || [];
-  mine.forEach(function(t){
-    var el=document.createElement('div'); el.className='listitem';
-    el.innerHTML='<span>'+(TIER_EMOJI[t.tier]||'🏆')+' '+esc(t.name)+'</span>'
-      +'<span class="muted" style="font-size:12px">'+String(t.earnedAt||'').slice(0,10)+'</span>';
-    host.appendChild(el);
-  });
-  // 未獲得分は内容を伏せて「？？？」で見せる(全部でいくつあるかだけ分かる)
-  var rest = Math.max(0, (state.trophyTotal||0) - mine.length);
-  for(var i=0;i<rest;i++){
-    var q=document.createElement('div'); q.className='listitem';
-    q.innerHTML='<span class="muted">❓ ？？？</span>';
-    host.appendChild(q);
-  }
+  var fams = state.trophyFamilies || [];
   document.getElementById('trophyCount').textContent = mine.length + ' / ' + (state.trophyTotal||0);
+  if(!fams.length){ renderTrophyFlat(host, mine); return; } // ファミリー情報が無い(古いキャッシュ等)時は従来の表示
+  var byFam = {};
+  mine.forEach(function(t){ var k=String(t.id||'').split('_')[0]; (byFam[k]=byFam[k]||[]).push(t); });
+  var hiddenCount = 0;
+  fams.forEach(function(f){
+    if(f.hidden || !f.earned){ hiddenCount += (f.total||0); return; }
+    var head=document.createElement('div'); head.className='row'; head.style.marginTop='12px';
+    head.innerHTML='<b class="grow">'+esc(f.name||'')+'</b><span class="pill">'+f.earned+' / '+f.total+'</span>';
+    host.appendChild(head);
+    var hint='';
+    if(f.earned >= f.total) hint='コンプリート！';
+    else if(f.remain === 0) hint='次に記録すると獲得！';
+    else if(f.remain != null) hint='次の段階まで あと'+f.remain+(f.unit||'');
+    if(hint){ var h=document.createElement('div'); h.className='muted'; h.style.cssText='font-size:12px; margin:2px 0 4px'; h.textContent=hint; host.appendChild(h); }
+    // 段階の小さい順に並べる(獲得順ではなく系列として読めるように)
+    var list=(byFam[f.key]||[]).slice().sort(function(a,b){ return (Number(String(a.id).split('_')[1])||0)-(Number(String(b.id).split('_')[1])||0); });
+    list.forEach(function(t){ host.appendChild(trophyRow(t)); });
+    var rest = Math.max(0, (f.total||0) - Math.max(f.earned, list.length));
+    if(rest) host.appendChild(trophyHiddenRow('この先まだ '+rest+' 段階'));
+  });
+  if(hiddenCount){
+    var u = trophyHiddenRow('まだ見つけていないトロフィー ×'+hiddenCount);
+    u.style.marginTop='12px';
+    host.appendChild(u);
+  }
+}
+function renderTrophyFlat(host, mine){
+  mine.forEach(function(t){ host.appendChild(trophyRow(t)); });
+  var rest = Math.max(0, (state.trophyTotal||0) - mine.length);
+  for(var i=0;i<rest;i++) host.appendChild(trophyHiddenRow('？？？'));
 }
 // 解放演出の「溜め」: 内容を確定させておき、先に背景と小さな光る点だけ見せて一呼吸置く。
 // その「間」の後に、音・ポップ演出・本文を一斉に出すことで、パッと出た瞬間の気持ちよさを強める
