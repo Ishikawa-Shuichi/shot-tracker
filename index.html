@@ -143,7 +143,7 @@
   </div>
 </div>
 <header>
-  <div class="grow"><h1 id="title">🏀 シュートログ <span id="streakBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--accent)"></span> <span id="pendingBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--bad); border-color:var(--bad)"></span></h1><div class="who" id="who">読み込み中…</div></div>
+  <div class="grow"><h1 id="title">🏀 シュートログ <span id="levelBadge" class="pill hidden" style="font-size:11px; vertical-align:2px"></span> <span id="streakBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--accent)"></span> <span id="pendingBadge" class="pill hidden" style="font-size:11px; vertical-align:2px; color:var(--bad); border-color:var(--bad)"></span></h1><div class="who" id="who">読み込み中…</div></div>
   <select id="ymSel" style="width:130px"></select>
 </header>
 
@@ -574,6 +574,7 @@ var state = {
   pendingOps: [],            // オフライン時の送信済み記録への編集/削除操作のキュー
   myTrophies: [],            // 獲得済みトロフィー(最初の1個を取るまで実績タブ自体を隠す)
   trophyFamilies: [],        // ファミリー別の獲得数と「次の段階まであと◯」(サーバー計算。無ければ従来の平らな一覧で出す)
+  myLevel: null,             // 表示レベル(サーバーが記録のたびに1日1段階ずつ本来のレベルへ追いつかせる)
   trophyTotal: 0,            // トロフィーの総数(未獲得分を「？？？」で見せる用)
   historyItems: [],          // 直近取得した(未送信分を含まない)履歴。未送信分と合成して表示するために保持
   syncing: false              // 未送信キューを送信中かどうか(二重実行防止)
@@ -866,6 +867,29 @@ function celebrateBestStreakIfBroken(prev, d){
   }
 }
 
+// ヘッダー左上の Lv.◯ ピル(記録画面でも常に見える)。色はライセンスの帯色と同じ。
+// LEVEL_META はこの位置より後で定義され、起動時のキャッシュ描画はそれより前に走るため、色だけここに持つ
+var LEVEL_BADGE_COLORS = { green: '#2ec76b', blue: 'var(--accent2)', purple: '#9b6bff', gold: '#f5c518' };
+function renderLevelBadge(){
+  var b = document.getElementById('levelBadge');
+  if(!b) return;
+  var lv = state.myLevel;
+  if(!lv || !lv.num){ b.classList.add('hidden'); return; }
+  var color = LEVEL_BADGE_COLORS[lv.tier] || LEVEL_BADGE_COLORS.green;
+  b.textContent = 'Lv.' + lv.num;
+  b.style.color = color; b.style.borderColor = color;
+  b.classList.remove('hidden');
+}
+// レベルアップの通知。記録の流れを止めないよう、モーダルではなく音+振動+トーストにする。
+// 連続記録のトースト(保存直後)と重ならないよう、少し遅らせて出す
+function celebrateLevelUp(lu){
+  setTimeout(function(){
+    playUnlockSound();
+    try{ if(navigator.vibrate) navigator.vibrate([60,40,120]); }catch(e){}
+    toast('🆙 Lv.' + lu.to + ' にレベルアップ！' + (lu.catchingUp ? ' 次の練習でまた上がります' : ''), 4000);
+  }, 2000);
+}
+
 // チーム/ライセンスタブも起動画面と同じ「前回データを即表示→裏で最新化」方式にする(体感ラグ削減)。
 // 応答順の入れ替わりで古いデータが後から画面を上書きしないよう、リクエスト連番で最後の要求だけを反映する
 var TAB_CACHE_PREFIX = 'tabCache_v1_';
@@ -897,6 +921,8 @@ function applyBootData(d, fromCache){
   updateStreakBadge(d.streak || 0);
   state.myTrophies = d.myTrophies || [];
   state.trophyFamilies = d.trophyFamilies || [];
+  state.myLevel = d.myLevel || null;
+  renderLevelBadge();
   state.trophyTotal = d.trophyTotal || 0;
   state.myGoal = d.myGoal || { weeklyGoal: 0, public: false };
   renderTrophyNav();
@@ -1445,6 +1471,9 @@ onTap(document.getElementById('recSave'), async function(){
       renderCourt();
       // 進み具合(あと◯)は新規獲得が無くても毎回変わる。自分の記録の時だけ反映する(代理記録では相手の値なので使わない)
       if(res.trophyFamilies && res.trophyOwner === state.user.userId) state.trophyFamilies = res.trophyFamilies;
+      // 表示レベル: myLevelは操作者自身の値なので常に反映。レベルアップの祝いは記録の持ち主が自分の時だけ
+      if(res.myLevel){ state.myLevel = res.myLevel; renderLevelBadge(); }
+      if(res.levelUp && res.trophyOwner === state.user.userId) celebrateLevelUp(res.levelUp);
       // トロフィーの新規獲得(記録の持ち主が対象。代理記録なら相手の獲得としてホスト画面でも祝う)
       if(res.newTrophies && res.newTrophies.length){
         if(res.trophyOwner === state.user.userId){
@@ -1727,7 +1756,9 @@ function renderLicenseList(list){
     var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
     var lvLabel = (d.level && d.level.num) ? 'Lv.' + d.level.num : meta.label; // 番号はサーバー計算(無限段階)。色は帯
     var next = d.level && d.level.next;
-    var nextLine = next!=null ? '次のレベルまであと'+(next-d.totalAttempts)+'本' : '最高レベル';
+    // 追いつき中(累計が次のレベルの本数を既に超えている)は本数ではなく「次の練習で上がる」と出す
+    var remainLv = next!=null ? next - d.totalAttempts : null;
+    var nextLine = remainLv==null ? '' : (remainLv > 0 ? '次のレベルまであと'+remainLv+'本' : '次の練習でレベルアップ');
 
     var card = document.createElement('div');
     card.className = 'card';

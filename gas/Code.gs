@@ -35,6 +35,7 @@ var SHEET_SPOTS = 'Spots';
 var SHEET_SHOTS = 'Shots';
 var SHEET_GOALS = 'Goals';
 var SHEET_FEST_PARTICIPANTS = 'FestParticipants';
+var SHEET_LEVELS = 'Levels'; // 表示レベル(1日1段階ずつ本来のレベルに追いつかせる用)
 
 // ===== チーム共同ゴール(シュートフェス) ============================
 // 期間限定(1週間)のチーム協力イベント。上限は設けない(頑張るほど得をする設計を貫く)。
@@ -183,6 +184,7 @@ function actionInit_(body) {
     trophyTotal: TROPHY_DEFS.length,
     trophyFamilies: trophyFamiliesFor_(userId, shots, spots, myTrophies), // ファミリー別の獲得数と「次まであと◯」
     myGoal: getMyGoal_(userId),
+    myLevel: getShownLevel_(userId, totalCareerAttempts_(shots, userId)), // ヘッダーの Lv.◯ ピル用(表示レベル)
     // 仲間のライセンス閲覧(誰でも誰の分でも見られる)用の選択肢として、ホスト以外にも渡す
     members: allMembers_(shots),
     fest: getFestStatus_(userId, shots)
@@ -375,6 +377,10 @@ function actionRecordShot_(body) {
   // トロフィー・ライブ解放・フェス段階通知は記録の持ち主(代理記録なら対象メンバー)に対して判定する。重複保存の再送時は判定しない
   var newTrophies = dupRow ? [] : evaluateTrophies_(userId, displayName, shots);
   var newFestTier = dupRow ? null : checkFestTierCrossing_(shotsBefore, shots);
+  // 持ち主の累計本数は表示レベルの判定・応答用に1回だけ計算して使い回す(全記録の走査なので複数回呼ばない)
+  var ownerTotalAttempts = totalCareerAttempts_(shots, userId);
+  var levelUp = dupRow ? null : advanceShownLevel_(userId, ownerTotalAttempts);
+  var actingTotalAttempts = (actingUserId === userId) ? ownerTotalAttempts : totalCareerAttempts_(shots, actingUserId);
   if (!dupRow) notifyNewLiveUnlocks_(userId, displayName, shotsBefore, shots, spots);
   return {
     id: id, ym: dupRow ? dupRow.ym : ym, duplicate: dupRow ? true : undefined,
@@ -385,6 +391,8 @@ function actionRecordShot_(body) {
     trophyOwner: userId,
     // 記録の持ち主の進み具合(新規獲得が無くても「あと◯」は毎回変わるので常に返す。クライアントは持ち主本人の画面でだけ反映)
     trophyFamilies: trophyFamiliesFor_(userId, shots, spots, getMyTrophies_(userId)),
+    levelUp: levelUp, // 持ち主(userId)のレベルアップ。クライアントは持ち主本人の画面でだけ祝う
+    myLevel: getShownLevel_(actingUserId, actingTotalAttempts), // 操作者自身のヘッダー表示用
     // フェスカードは「画面を操作している人」の視点で表示する(「あなたの貢献」が代理対象者の本数に
     // 化けないように)。段階の判定・通知はチーム全体なので、この引数の違いには影響されない。
     fest: getFestStatus_(actingUserId, shots),
@@ -966,6 +974,59 @@ function computeLicenseLevel_(totalAttempts) {
   return { tier: tier, num: n, next: licenseLevelNeed_(n + 1) };
 }
 
+// 表示レベル(選手が実際に見るレベル)。
+// 2026-09-27に曲線を緩くした時点で、累計3000本の選手は本来Lv.26だが、いきなり26にすると25回分の
+// 「レベルアップの瞬間」が消える。そこで表示レベルはLv.1から始め、記録するたびに1日1段階だけ上げて
+// 本来のレベルに徐々に追いつかせる。新規の選手は本来の速度とほぼ同じなので違いを感じない。
+// 1日1段階までなので、1回の練習で複数段階は上がらない(追いついた後も同じ上限)。
+function shownLevelMap_() {
+  var rows = getSheet_(SHEET_LEVELS).getDataRange().getValues();
+  var map = {};
+  for (var i = 1; i < rows.length; i++) {
+    if (!rows[i][0]) continue;
+    map[String(rows[i][0])] = { level: Number(rows[i][1]) || 1, lastDate: dateCell_(rows[i][2]) };
+  }
+  return map;
+}
+function levelInfo_(shown, totalAttempts) {
+  var trueLv = computeLicenseLevel_(totalAttempts);
+  var tier = LICENSE_LEVEL_COLORS[0].tier;
+  LICENSE_LEVEL_COLORS.forEach(function (c) { if (shown >= c.minLevel) tier = c.tier; });
+  return { num: shown, tier: tier, next: licenseLevelNeed_(shown + 1), trueNum: trueLv.num, catchingUp: shown < trueLv.num };
+}
+function getShownLevel_(userId, totalAttempts, map) {
+  var m = map || shownLevelMap_();
+  return levelInfo_(m[userId] ? m[userId].level : 1, totalAttempts);
+}
+// 記録保存後に呼ぶ。表示レベルが上がったら { from, to, tier, next, catchingUp } を返す(上がらなければnull)
+function advanceShownLevel_(userId, totalAttempts) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(10000); } catch (e) { return null; } // 混雑時は次回の保存で上がる
+  try {
+    var sh = getSheet_(SHEET_LEVELS);
+    var rows = sh.getDataRange().getValues();
+    var rowIdx = -1, shown = 1, lastDate = '';
+    for (var i = 1; i < rows.length; i++) {
+      if (String(rows[i][0]) === userId) { rowIdx = i; shown = Number(rows[i][1]) || 1; lastDate = dateCell_(rows[i][2]); break; }
+    }
+    var trueLv = computeLicenseLevel_(totalAttempts).num;
+    var today = dateOf_(new Date());
+    if (shown >= trueLv || lastDate === today) return null;
+    var to = shown + 1;
+    var now = new Date().toISOString();
+    if (rowIdx === -1) sh.appendRow([userId, to, today, now]);
+    else {
+      sh.getRange(rowIdx + 1, 2).setValue(to);
+      sh.getRange(rowIdx + 1, 3).setValue(today);
+      sh.getRange(rowIdx + 1, 4).setValue(now);
+    }
+    var info = levelInfo_(to, totalAttempts);
+    return { from: shown, to: to, tier: info.tier, next: info.next, catchingUp: info.catchingUp };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function totalCareerAttempts_(shots, userId) {
   var total = 0;
   shots.forEach(function (s) { if (s.userId === userId) total += s.attempts; });
@@ -1076,6 +1137,7 @@ function actionGetAllLicenses_(body) {
     }
   });
 
+  var levelMap = shownLevelMap_(); // 表示レベル(1回だけ読む)。ヘッダーの Lv.◯ と同じ値を一覧にも出す
   var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0 && !isViewerHost_(uid); });
   var list = ids.map(function (uid) {
     var a = acc[uid] || { total: 0, days: {}, bySpot: {}, week: 0 };
@@ -1086,7 +1148,7 @@ function actionGetAllLicenses_(body) {
       title: titleFromBySpot_(spots, a.bySpot),
       currentStreak: streakFromDays_(a.days),
       bestStreak: bestStreakFromDays_(a.days),
-      level: computeLicenseLevel_(a.total),
+      level: getShownLevel_(uid, a.total, levelMap),
       totalAttempts: a.total,
       totalDays: Object.keys(a.days).length
     };
@@ -1751,6 +1813,8 @@ function getSheet_(name) {
       sh.appendRow(['userId', 'weeklyGoal', 'public', 'updatedAt']);
     } else if (name === SHEET_FEST_PARTICIPANTS) {
       sh.appendRow(['weekKey', 'userId', 'displayName', 'joinedAt']);
+    } else if (name === SHEET_LEVELS) {
+      sh.appendRow(['userId', 'shownLevel', 'lastAdvancedDate', 'updatedAt']);
     }
   }
   return sh;
