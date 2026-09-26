@@ -944,18 +944,20 @@ function weekAttemptsOf_(shots, userId) {
 // 誰でも誰の分でも閲覧できる(BeReal的に連続記録を見せ合う延長)。
 // トロフィーは内容ではなく「数」だけ、称号・連続記録・累計本数によるレベルを表示する。
 
-// ライセンスレベル: 累計試投数で上がる。Lv.n に必要な本数 = (n-1) × (200 + 50n)
-//   Lv.2=300本、Lv.3=700、Lv.4=1200、Lv.5=1800、Lv.6=2500、Lv.7=3300、Lv.10=6300、Lv.20=22800、Lv.30=49300
-// 上がるほど次までの幅が100本ずつ広がる(序盤は1〜2週間に1回上がる)。上限は設けない。
+// ライセンスレベル: 累計試投数で上がる。上限なし。
+// 目安は「頑張れば1年でLv.100」(月1500本=年18,000本ペース。2026-09時点の瑛祐のペース)。
+//   Lv.n に必要な本数 = 100(n-1) + 0.8(n-1)²
+//   Lv.2=101本、Lv.3=203、Lv.5=413、Lv.10=965、Lv.20=2189、Lv.50=6821、Lv.100=17741、Lv.200=51581
+// 序盤は100本ごとに上がり、Lv.100付近では1段階260本ほど。週2,3回(月400本)なら1年でLv.40前後。
 // 以前は 5000/20000/50000 の3段しかなく、7週間たっても全員Lv.1のままだった(2026-09-27に変更)。
-// 色は帯で決める: green Lv.1-4 / blue Lv.5-9 / purple Lv.10-19 / gold Lv.20以上
+// 色は帯で決める: green Lv.1-9 / blue Lv.10-29 / purple Lv.30-59 / gold Lv.60以上
 var LICENSE_LEVEL_COLORS = [
   { tier: 'green',  minLevel: 1 },
-  { tier: 'blue',   minLevel: 5 },
-  { tier: 'purple', minLevel: 10 },
-  { tier: 'gold',   minLevel: 20 }
+  { tier: 'blue',   minLevel: 10 },
+  { tier: 'purple', minLevel: 30 },
+  { tier: 'gold',   minLevel: 60 }
 ];
-function licenseLevelNeed_(n) { return (n - 1) * (200 + 50 * n); }
+function licenseLevelNeed_(n) { var k = n - 1; return Math.round(100 * k + 0.8 * k * k); }
 function computeLicenseLevel_(totalAttempts) {
   var n = 1;
   while (totalAttempts >= licenseLevelNeed_(n + 1)) n++;
