@@ -980,9 +980,14 @@ function computeLicenseLevel_(totalAttempts) {
 // 新規の選手は本来の速度とほぼ同じなので違いを感じない。
 // 1日1段階という制限は付けない: 1回の練習でたくさん打った日ほど本来のレベルとの差が「かえって開く」
 // (本来のレベルはその日のうちに何段も進むのに、表示は1日1段階しか追いつけない)逆転が起きるため。
-// 代わりに「1回の保存につき最大◯段階」の上限にする(段階アニメを連続で見せて気持ちよくする狙いなので、
-// 1段階ずつでも1回の保存で何度も保存すれば何段でも進む=いずれ必ず追いつく)。
-var LEVEL_CATCHUP_MAX_PER_SAVE = 7;
+// 代わりに「保存のたびに、残りの差を半分ずつ詰める」方式にする: 差25なら13→6→3→2→1、差5なら3→1→1。
+// どんな差の大きさでも同じ式で自動的に「最初は大きく、だんだん小さく」を再現でき、追加の状態(前回何回目か等)
+// も要らない。半分は切り上げる(端数切り捨てだと差が1のときに0段=一生追いつかなくなるため)ので、
+// 保存するたびに必ず1段以上は進み、いずれ必ず追いつく。
+// 「本数に倍率を掛けて換算」する案も検討したが、実データ(1保存あたり中央値10本)では7倍しても70本にしかならず、
+// Lv.2(101本)にも届かない(序盤ほど1レベルの重みが本数換算で大きいため)。本数ではなくレベルの差そのものを
+// 半分にする方式にする。
+function levelCatchupStep_(shown, trueLv) { return Math.ceil((trueLv - shown) / 2); }
 function shownLevelMap_() {
   var rows = getSheet_(SHEET_LEVELS).getDataRange().getValues();
   var map = {};
@@ -1016,7 +1021,7 @@ function advanceShownLevel_(userId, totalAttempts) {
     }
     var trueLv = computeLicenseLevel_(totalAttempts).num;
     if (shown >= trueLv) return null;
-    var to = Math.min(trueLv, shown + LEVEL_CATCHUP_MAX_PER_SAVE);
+    var to = Math.min(trueLv, shown + levelCatchupStep_(shown, trueLv));
     var today = dateOf_(new Date());
     var now = new Date().toISOString();
     if (rowIdx === -1) sh.appendRow([userId, to, today, now]);
