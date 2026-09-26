@@ -779,8 +779,9 @@ function applyOptimisticFest(payload){
   if(!f || !f.enabled || f.isOver) return;
   if(payload.date < f.range.monday || payload.date > f.range.sunday) return; // フェス週の記録だけが対象
   var add = payload.attempts;
-  // 日曜の2倍デーはサーバーと同じ条件(3段階目が未達のまま日曜を迎えた場合)でのみ効く
-  if(f.isSunday && f.tierReached < f.tiers.length) add *= 2;
+  // 倍チャンスかどうかはサーバーが「土曜までの合計」で決めて mode に入れてくる(日曜の途中で変わらない)。クライアント側で条件を複製しない
+  if(f.isSunday && f.mode === 'double') add *= 2;
+  if(f.extra && f.isSunday){ f.extra.progress = (f.extra.progress||0) + payload.attempts; f.extra.achieved = f.extra.participants > 0 && f.extra.progress >= f.extra.target; }
   f.rawTotal += payload.attempts;
   f.displayTotal += add;
   // 貢献は自分の記録だけ(ホストの代理記録は対象者の貢献であって自分の貢献ではない)
@@ -1577,13 +1578,17 @@ function renderFestCard(fest){
   var doubleBanner = document.getElementById('festDoubleBanner');
   var extraCard = document.getElementById('festExtraCard');
   doubleBanner.classList.toggle('hidden', fest.mode !== 'double');
-  extraCard.classList.toggle('hidden', fest.mode !== 'extra');
-  if(fest.mode === 'extra' && fest.extra){
-    document.getElementById('festExtraDesc').textContent =
-      '参加表明 ' + fest.extra.participants + '人 → 追加目標 ' + fest.extra.target + '本(現在地までの合計本数と比較して伸ばそう)';
+  // エクストラは日曜に参加表明でき、月曜以降も結果だけ見える(extraが付いていれば表示。ボタンは日曜=modeがextraの時だけ)
+  extraCard.classList.toggle('hidden', !fest.extra);
+  if(fest.extra){
+    var ex = fest.extra;
+    document.getElementById('festExtraDesc').textContent = ex.participants
+      ? '参加表明 ' + ex.participants + '人 → 今日みんなで ' + ex.target + '本 が目標。現在 ' + (ex.progress||0) + '本' + (ex.achieved ? '、達成！🎁' : '')
+      : '参加表明した人数 × ' + (ex.perPerson||100) + '本 を、今日みんなで打つミッション。まだ誰も参加していません';
     var btn = document.getElementById('festJoinBtn');
-    btn.textContent = fest.extra.joined ? '参加済み ✅' : '参加する';
-    btn.disabled = fest.extra.joined;
+    btn.classList.toggle('hidden', fest.mode !== 'extra');
+    btn.textContent = ex.joined ? '参加済み ✅' : '参加する';
+    btn.disabled = !!ex.joined;
   }
 }
 onTap(document.getElementById('festJoinBtn'), async function(){
@@ -1720,6 +1725,7 @@ function renderLicenseList(list){
   var viewerHasFoundTrophies = !!(state.myTrophies && state.myTrophies.length);
   list.forEach(function(d){
     var meta = LEVEL_META[(d.level && d.level.tier)] || LEVEL_META.green;
+    var lvLabel = (d.level && d.level.num) ? 'Lv.' + d.level.num : meta.label; // 番号はサーバー計算(無限段階)。色は帯
     var next = d.level && d.level.next;
     var nextLine = next!=null ? '次のレベルまであと'+(next-d.totalAttempts)+'本' : '最高レベル';
 
@@ -1728,7 +1734,7 @@ function renderLicenseList(list){
     card.style.borderColor = meta.color;
 
     var html = '<div class="row">'
-      + '<span class="pill" style="color:'+meta.color+'; border-color:'+meta.color+'">'+meta.label+'</span>'
+      + '<span class="pill" style="color:'+meta.color+'; border-color:'+meta.color+'">'+lvLabel+'</span>'
       + '<b class="grow" style="margin-left:8px">'+esc(d.name)+(d.userId===state.user.userId?'(自分)':'')+'</b>'
       + '</div>'
       + (d.title ? '<div class="muted" style="margin-top:6px">'+esc(d.title)+'</div>' : '')

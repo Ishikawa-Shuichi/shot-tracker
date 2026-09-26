@@ -48,7 +48,10 @@ function appMsg_(text) { return '【' + APP_NAME + '】' + text; }
 var FEST_NAME = 'シュートフェス';
 var FEST_TIERS = [1000, 2000, 3000];
 var FEST_EXTRA_PER_PERSON = 100; // エクストラミッション: 参加表明した人数 × この本数が追加目標
-var FEST_SUNDAY_MULTIPLIER = 2;  // 3段階目未達のまま日曜を迎えた場合、その日の本数を何倍で加算するか
+var FEST_SUNDAY_MULTIPLIER = 2;  // 倍チャンスの倍率(日曜分の本数に掛ける)
+// 倍チャンスは「土曜までの合計がこの本数に届かなかった週」だけ発動する(日曜分は含めない=日曜の途中で条件が変わらない)。
+// 放っておいても届きそうな週にまで倍を出すと達成が簡単になりすぎるため(2026-09-27、8月・9月の実績から)。
+var FEST_DOUBLE_IF_BELOW = 2200;
 // 通常はすべてfalse(通知する)。無料メッセージ枠が逼迫した時だけtrueにして通数を節約する。
 // 2026-09-10: 有料化の目処が立つまで、トロフィー・ライブ解放の通知はどちらも停止中。
 var NOTIFY_LIVE_UNLOCK_PAUSED = true;
@@ -941,19 +944,24 @@ function weekAttemptsOf_(shots, userId) {
 // 誰でも誰の分でも閲覧できる(BeReal的に連続記録を見せ合う延長)。
 // トロフィーは内容ではなく「数」だけ、称号・連続記録・累計本数によるレベルを表示する。
 
-var LICENSE_LEVELS = [
-  { tier: 'green',  min: 0 },
-  { tier: 'blue',   min: 5000 },
-  { tier: 'purple', min: 20000 },
-  { tier: 'gold',   min: 50000 }
+// ライセンスレベル: 累計試投数で上がる。Lv.n に必要な本数 = (n-1) × (200 + 50n)
+//   Lv.2=300本、Lv.3=700、Lv.4=1200、Lv.5=1800、Lv.6=2500、Lv.7=3300、Lv.10=6300、Lv.20=22800、Lv.30=49300
+// 上がるほど次までの幅が100本ずつ広がる(序盤は1〜2週間に1回上がる)。上限は設けない。
+// 以前は 5000/20000/50000 の3段しかなく、7週間たっても全員Lv.1のままだった(2026-09-27に変更)。
+// 色は帯で決める: green Lv.1-4 / blue Lv.5-9 / purple Lv.10-19 / gold Lv.20以上
+var LICENSE_LEVEL_COLORS = [
+  { tier: 'green',  minLevel: 1 },
+  { tier: 'blue',   minLevel: 5 },
+  { tier: 'purple', minLevel: 10 },
+  { tier: 'gold',   minLevel: 20 }
 ];
+function licenseLevelNeed_(n) { return (n - 1) * (200 + 50 * n); }
 function computeLicenseLevel_(totalAttempts) {
-  var cur = LICENSE_LEVELS[0], next = null;
-  for (var i = 0; i < LICENSE_LEVELS.length; i++) {
-    if (totalAttempts >= LICENSE_LEVELS[i].min) cur = LICENSE_LEVELS[i];
-    else if (next === null) next = LICENSE_LEVELS[i];
-  }
-  return { tier: cur.tier, next: next ? next.min : null };
+  var n = 1;
+  while (totalAttempts >= licenseLevelNeed_(n + 1)) n++;
+  var tier = LICENSE_LEVEL_COLORS[0].tier;
+  LICENSE_LEVEL_COLORS.forEach(function (c) { if (n >= c.minLevel) tier = c.tier; });
+  return { tier: tier, num: n, next: licenseLevelNeed_(n + 1) };
 }
 
 function totalCareerAttempts_(shots, userId) {
@@ -1122,21 +1130,27 @@ function festTotals_(shots) {
     if (s.date === range.sunday) sundayRaw += s.attempts;
   });
   var tier3Value = FEST_TIERS[FEST_TIERS.length - 1];
-  var reachedTier3BeforeMultiplier = total >= tier3Value;
-  // 倍率は「日曜の時点で3段階目にまだ届いていない場合」のみ、日曜分の本数に適用する
+  // 日曜のルールは「土曜までの合計」だけで決める(日曜の途中で倍が付いたり消えたり、エクストラが突然開いたりしないように)。
+  //   土曜までに3段階目クリア            → エクストラミッション(倍なし)
+  //   土曜までに FEST_DOUBLE_IF_BELOW 未満 → 倍チャンス
+  //   その間                              → 通常(倍なし)
+  var monToSat = total - sundayRaw;
+  var extraMode = monToSat >= tier3Value;
+  var doubleDay = !extraMode && monToSat < FEST_DOUBLE_IF_BELOW;
   var displayTotal = total;
   var multiplierApplied = false;
-  if (!reachedTier3BeforeMultiplier) {
+  if (doubleDay) {
     var todayStr = dateOf_(new Date());
     // 日曜以降(月曜になっても)、倍チャンス込みの結果を維持する。
     // 週が終わった後もアプリにフェスカードを残す運用があるため、月曜に生本数へ後退して
     // 「日曜に達成したはずなのに未達に見える」という矛盾が起きないようにする
     if (todayStr >= range.sunday) {
-      displayTotal = (total - sundayRaw) + sundayRaw * FEST_SUNDAY_MULTIPLIER;
+      displayTotal = monToSat + sundayRaw * FEST_SUNDAY_MULTIPLIER;
       multiplierApplied = sundayRaw > 0;
     }
   }
-  return { range: range, rawTotal: total, displayTotal: displayTotal, multiplierApplied: multiplierApplied, byUser: byUser };
+  return { range: range, rawTotal: total, displayTotal: displayTotal, multiplierApplied: multiplierApplied, byUser: byUser,
+           monToSat: monToSat, sundayRaw: sundayRaw, extraMode: extraMode, doubleDay: doubleDay };
 }
 
 function festTierReached_(displayTotal) {
@@ -1171,16 +1185,23 @@ function getFestStatus_(userId, shots) {
   var isOver = todayStr > range.sunday;
   var mode = 'normal';
   var extra = null;
-  if (isSunday && tierReached >= FEST_TIERS.length) {
-    mode = 'extra';
+  // エクストラ/倍チャンスは festTotals_ が「土曜までの合計」で決めている。
+  // (以前は2倍込みの表示本数で判定していたため、倍チャンスで3000本に届いた瞬間にエクストラが開き、
+  //  参加表明はできるのに達成判定が無い、という状態になっていた=2026-08の不具合)
+  if ((isSunday || isOver) && t.extraMode) {
+    if (isSunday) mode = 'extra'; // 参加表明できるのは日曜だけ。月曜以降は結果表示のみ
     var participants = festExtraParticipants_();
+    var target = participants.length * FEST_EXTRA_PER_PERSON;
     extra = {
       participants: participants.length,
-      target: participants.length * FEST_EXTRA_PER_PERSON,
+      perPerson: FEST_EXTRA_PER_PERSON,
+      target: target,                 // 参加表明した人数 × 100本 を、日曜1日でチーム全員の合計で打つ
+      progress: t.sundayRaw,          // 日曜に打った本数(全員分)
+      achieved: participants.length > 0 && t.sundayRaw >= target,
       joined: userId ? participants.some(function (p) { return p.userId === userId; }) : false
     };
-  } else if (isSunday && t.multiplierApplied) {
-    mode = 'double';
+  } else if (isSunday && t.doubleDay) {
+    mode = 'double'; // 誰かが記録する前から「今日は倍」と分かるように、日曜分が0本でも倍チャンスの日なら出す
   }
   return {
     enabled: true, name: FEST_NAME, range: range, isSunday: isSunday, isOver: isOver,
@@ -2047,10 +2068,10 @@ function festFinalMessageBlock_(shots) {
   if (status.tierReached >= FEST_TIERS.length) {
     // 2倍デーの後押しで届いた場合も、仕組みの説明はせず素直に祝う
     lines.push('全段階達成、お疲れさまでした🏆');
-    var participants = festExtraParticipants_();
-    if (participants.length) {
-      var target = participants.length * FEST_EXTRA_PER_PERSON;
-      lines.push('エクストラミッション: ' + participants.length + '人参加(目標' + target + '本)');
+    if (status.extra && status.extra.participants) {
+      var ex = status.extra;
+      lines.push('エクストラミッション: ' + ex.participants + '人参加 → 日曜の目標' + ex.target + '本に対して' + ex.progress + '本'
+        + (ex.achieved ? '、達成🎁' : '、あと一歩'));
     }
   } else if (festIsRecordWeek_(shots, status.displayTotal)) {
     lines.push('目標には届きませんでしたが、このチーム合計はこれまでで一番の記録です！お疲れさまでした🎉');
