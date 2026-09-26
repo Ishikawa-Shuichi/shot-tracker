@@ -116,6 +116,11 @@
   @keyframes festGlow{0%,100%{box-shadow:0 0 0 rgba(245,197,24,0)} 50%{box-shadow:0 0 14px rgba(245,197,24,.7)}}
   #festMeterTrack.fest-complete{animation:festGlow 1.8s ease-in-out infinite; border-color:#f5c518;}
 
+  /* レベルアップ演出: メーターが伸びて弾ける動きを、1回の保存で複数段階でも連続で見せる */
+  #levelUpMeterBar{height:100%; width:0%; background:var(--accent2); border-radius:6px;}
+  @keyframes levelDing{0%{transform:scale(1)} 45%{transform:scale(1.4)} 100%{transform:scale(1)}}
+  .level-ding{animation:levelDing .38s cubic-bezier(.2,1.6,.4,1) both;}
+
   table{width:100%; border-collapse:collapse; font-size:13px;}
   th,td{padding:7px 6px; border-bottom:1px solid var(--line); text-align:right;}
   th:first-child,td:first-child{text-align:left;}
@@ -522,6 +527,22 @@
   </div>
 </div>
 
+<!-- レベルアップの演出: 1回の保存で複数段階まとめて上がった時、メーターが伸びて弾ける動きを連続で自動再生する -->
+<div class="sheet-bg" id="levelUpBg" style="align-items:center; justify-content:center; z-index:62;">
+  <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:var(--accent2); min-width:200px">
+    <div id="levelUpTame" class="tame-dot hidden"></div>
+    <div id="levelUpContent">
+      <div style="font-size:40px">📈</div>
+      <b id="levelUpLabel" style="display:block; margin-top:6px; font-size:28px">Lv.1</b>
+      <div id="levelUpMeterTrack" style="margin-top:16px; height:14px; border-radius:7px; background:var(--card2); border:1px solid var(--line); overflow:hidden;">
+        <div id="levelUpMeterBar"></div>
+      </div>
+      <div class="muted" id="levelUpHint" style="margin-top:12px; font-size:12px; min-height:1.2em"></div>
+      <button class="btn" id="levelUpCloseBtn" style="margin-top:20px; display:none">やったね 🎉</button>
+    </div>
+  </div>
+</div>
+
 <!-- ライブシューティング解放の演出(記録直後に全画面で目立たせ、タップするまで閉じない) -->
 <div class="sheet-bg" id="unlockBg" style="align-items:center; justify-content:center; z-index:60;">
   <div class="card" style="margin:24px; text-align:center; padding:28px 20px; border-color:var(--accent); min-width:180px">
@@ -880,15 +901,50 @@ function renderLevelBadge(){
   b.style.color = color; b.style.borderColor = color;
   b.classList.remove('hidden');
 }
-// レベルアップの通知。記録の流れを止めないよう、モーダルではなく音+振動+トーストにする。
-// 連続記録のトースト(保存直後)と重ならないよう、少し遅らせて出す
+// レベルアップの演出。1回の保存で複数段階(最大7)まとめて上がることがあるため、
+// メーターが0%→100%まで伸びて弾ける→即0%に戻ってまた伸びる、を段階の数だけ自動で連続再生する
+// (「メーターが増えてレベル上がって」の連続を狙った演出。追いつき中の選手ほど一気に何段も見せて盛り上げる)。
+// メーターの中身は本数の実際の割合ではなく、この演出のためだけの符号的な満タン→リセットの繰り返し。
 function celebrateLevelUp(lu){
+  var cur = lu.from;
+  var bg = document.getElementById('levelUpBg');
+  var tame = document.getElementById('levelUpTame');
+  var content = document.getElementById('levelUpContent');
+  var bar = document.getElementById('levelUpMeterBar');
+  var label = document.getElementById('levelUpLabel');
+  var hint = document.getElementById('levelUpHint');
+  var closeBtn = document.getElementById('levelUpCloseBtn');
+  label.textContent = 'Lv.' + cur;
+  hint.textContent = '';
+  closeBtn.style.display = 'none';
+  bar.style.transition = 'none'; bar.style.width = '0%';
+  // トロフィー等の runTameReveal は「見た目を先に同期的にセットする関数」を渡す設計で、
+  // この演出は「タメが明けた"後"に段階再生を始める」形なので専用に組む(使い回すと開始タイミングがずれる)
+  content.classList.add('hidden'); content.classList.remove('reveal-fade');
+  tame.classList.remove('hidden');
+  bg.classList.add('open');
   setTimeout(function(){
-    playUnlockSound();
-    try{ if(navigator.vibrate) navigator.vibrate([60,40,120]); }catch(e){}
-    toast('🆙 Lv.' + lu.to + ' にレベルアップ！' + (lu.catchingUp ? ' 次の練習でまた上がります' : ''), 4000);
-  }, 2000);
+    tame.classList.add('hidden');
+    content.classList.remove('hidden'); content.classList.add('reveal-fade');
+    step();
+  }, TAME_MS);
+  function step(){
+    void bar.offsetWidth; // 直前のwidth:0%を確実に描画させてから伸ばす(連続再生の1段階目もここで反映)
+    bar.style.transition = 'width .36s cubic-bezier(.2,.8,.2,1)';
+    bar.style.width = '100%';
+    setTimeout(function(){
+      cur++;
+      playUnlockSound();
+      try{ if(navigator.vibrate) navigator.vibrate(60); }catch(e){}
+      label.textContent = 'Lv.' + cur;
+      label.classList.remove('level-ding'); void label.offsetWidth; label.classList.add('level-ding');
+      bar.style.transition = 'none'; bar.style.width = '0%';
+      if(cur < lu.to) setTimeout(step, 110); // 一瞬空にしてから次の段階へ(伸びる動きを毎回見せるため)
+      else { hint.textContent = lu.catchingUp ? '次の練習でまた上がります' : ''; closeBtn.style.display = ''; }
+    }, 360);
+  }
 }
+onTap(document.getElementById('levelUpCloseBtn'), function(){ document.getElementById('levelUpBg').classList.remove('open'); });
 
 // チーム/ライセンスタブも起動画面と同じ「前回データを即表示→裏で最新化」方式にする(体感ラグ削減)。
 // 応答順の入れ替わりで古いデータが後から画面を上書きしないよう、リクエスト連番で最後の要求だけを反映する

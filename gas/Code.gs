@@ -976,9 +976,13 @@ function computeLicenseLevel_(totalAttempts) {
 
 // 表示レベル(選手が実際に見るレベル)。
 // 2026-09-27に曲線を緩くした時点で、累計3000本の選手は本来Lv.26だが、いきなり26にすると25回分の
-// 「レベルアップの瞬間」が消える。そこで表示レベルはLv.1から始め、記録するたびに1日1段階だけ上げて
-// 本来のレベルに徐々に追いつかせる。新規の選手は本来の速度とほぼ同じなので違いを感じない。
-// 1日1段階までなので、1回の練習で複数段階は上がらない(追いついた後も同じ上限)。
+// 「レベルアップの瞬間」が消える。そこで表示レベルはLv.1から始め、記録するたびに本来のレベルに近づけていく。
+// 新規の選手は本来の速度とほぼ同じなので違いを感じない。
+// 1日1段階という制限は付けない: 1回の練習でたくさん打った日ほど本来のレベルとの差が「かえって開く」
+// (本来のレベルはその日のうちに何段も進むのに、表示は1日1段階しか追いつけない)逆転が起きるため。
+// 代わりに「1回の保存につき最大◯段階」の上限にする(段階アニメを連続で見せて気持ちよくする狙いなので、
+// 1段階ずつでも1回の保存で何度も保存すれば何段でも進む=いずれ必ず追いつく)。
+var LEVEL_CATCHUP_MAX_PER_SAVE = 7;
 function shownLevelMap_() {
   var rows = getSheet_(SHEET_LEVELS).getDataRange().getValues();
   var map = {};
@@ -998,21 +1002,22 @@ function getShownLevel_(userId, totalAttempts, map) {
   var m = map || shownLevelMap_();
   return levelInfo_(m[userId] ? m[userId].level : 1, totalAttempts);
 }
-// 記録保存後に呼ぶ。表示レベルが上がったら { from, to, tier, next, catchingUp } を返す(上がらなければnull)
+// 記録保存後に呼ぶ。表示レベルが上がったら { from, to, steps, tier, next, catchingUp } を返す(上がらなければnull)。
+// steps = to-from = このアニメで何回「メーターが伸びて弾ける」を見せるか(クライアント側の連続演出用)
 function advanceShownLevel_(userId, totalAttempts) {
   var lock = LockService.getScriptLock();
   try { lock.waitLock(10000); } catch (e) { return null; } // 混雑時は次回の保存で上がる
   try {
     var sh = getSheet_(SHEET_LEVELS);
     var rows = sh.getDataRange().getValues();
-    var rowIdx = -1, shown = 1, lastDate = '';
+    var rowIdx = -1, shown = 1;
     for (var i = 1; i < rows.length; i++) {
-      if (String(rows[i][0]) === userId) { rowIdx = i; shown = Number(rows[i][1]) || 1; lastDate = dateCell_(rows[i][2]); break; }
+      if (String(rows[i][0]) === userId) { rowIdx = i; shown = Number(rows[i][1]) || 1; break; }
     }
     var trueLv = computeLicenseLevel_(totalAttempts).num;
+    if (shown >= trueLv) return null;
+    var to = Math.min(trueLv, shown + LEVEL_CATCHUP_MAX_PER_SAVE);
     var today = dateOf_(new Date());
-    if (shown >= trueLv || lastDate === today) return null;
-    var to = shown + 1;
     var now = new Date().toISOString();
     if (rowIdx === -1) sh.appendRow([userId, to, today, now]);
     else {
@@ -1021,7 +1026,7 @@ function advanceShownLevel_(userId, totalAttempts) {
       sh.getRange(rowIdx + 1, 4).setValue(now);
     }
     var info = levelInfo_(to, totalAttempts);
-    return { from: shown, to: to, tier: info.tier, next: info.next, catchingUp: info.catchingUp };
+    return { from: shown, to: to, steps: to - shown, tier: info.tier, next: info.next, catchingUp: info.catchingUp };
   } finally {
     lock.releaseLock();
   }
