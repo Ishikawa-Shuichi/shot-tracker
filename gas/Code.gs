@@ -146,6 +146,7 @@ function doPost(e) {
       case 'registerMember': data = actionRegisterMember_(body); break;
       case 'getFestStatus': data = actionGetFestStatus_(body); break;
       case 'festParticipate': data = actionFestParticipate_(body); break;
+      case 'getLineQuota': data = actionGetLineQuota_(body); break;
       default:
         return json_({ ok: false, error: 'unknown action: ' + action });
     }
@@ -1898,6 +1899,26 @@ function registerKnownUser_(userId) {
     if (String(rows[i][0]) === userId) return; // 登録済み
   }
   sh.appendRow([userId, fetchLineDisplayName_(userId) || '(名前未取得)', new Date().toISOString()]);
+}
+
+// 今月のLINE公式アカウントのメッセージ通数(上限・使用済み・残り)を問い合わせる。
+// LINE Messaging APIの読み取り専用エンドポイントを叩くだけで、こちらから何かを送信するわけではない。
+// 運営向けの情報(通数の残りは業務上の判断材料であり、選手が見る意味はない)なのでホスト限定にする。
+function actionGetLineQuota_(body) {
+  if (!isHost_(String(body.userId || ''))) throw new Error('この情報の閲覧はホストのみ可能です');
+  var token = getLineToken_();
+  if (!token) throw new Error('LINEチャネルアクセストークンが未設定です');
+  var headers = { Authorization: 'Bearer ' + token };
+  var limitRes = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/quota', { headers: headers, muteHttpExceptions: true });
+  var usageRes = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/quota/consumption', { headers: headers, muteHttpExceptions: true });
+  if (limitRes.getResponseCode() !== 200 || usageRes.getResponseCode() !== 200) {
+    throw new Error('LINEへの問い合わせに失敗しました(' + limitRes.getResponseCode() + '/' + usageRes.getResponseCode() + ')');
+  }
+  var limitData = JSON.parse(limitRes.getContentText()); // { type: 'limited'|'none', value?: number }
+  var usageData = JSON.parse(usageRes.getContentText()); // { totalUsage: number }
+  var limit = limitData.type === 'limited' ? limitData.value : null; // 'none'は無制限プランなのでlimit自体が無い
+  var used = usageData.totalUsage;
+  return { limit: limit, used: used, remaining: (limit != null) ? Math.max(0, limit - used) : null };
 }
 
 function fetchLineDisplayName_(userId) {
