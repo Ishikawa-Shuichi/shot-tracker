@@ -773,22 +773,29 @@ function recoverInFlightShots(){
 }
 // 保存直後、その場でコート/じぶんタブ/履歴に反映する(未送信でも見た目には即反映)。
 // 本人の記録はマイ統計へ、ホストの代理記録は代理表示用の統計へ反映する。
+// 1件の記録を、スポット別・合計の確率に足す(sign=1)/引く(sign=-1)。加算ルールはサーバーと同じ:
+// 指定なし記録は常に数える、シチュエーション付きはマイスポットの分だけ数える(ライブ記録は別枠のため数えない)。
+// 表示中の月(state.ym)以外の記録は数えない。新規記録・編集・削除(未送信/送信済みとも)で同じ規則を使う
+function addRecToStats(stats, r, sign){
+  if(!stats || !r) return false;
+  if(state.ym && r.ym !== state.ym) return false;
+  var spot = stats.spots.find(function(s){ return s.spotId === r.spotId; });
+  if(r.situation && !(spot && spot.scope === 'personal')) return false;
+  var pct = function(m, a){ return a>0 ? Math.round(m/a*1000)/10 : 0; };
+  if(spot){ spot.makes += sign*r.makes; spot.attempts += sign*r.attempts; spot.pct = pct(spot.makes, spot.attempts); }
+  var t = stats.total;
+  t.makes += sign*r.makes; t.attempts += sign*r.attempts; t.pct = pct(t.makes, t.attempts);
+  return true;
+}
+// その人の(表示中の月の)統計。自分ならstate.myStats、代理記録中の相手ならstate.proxyStats(その人の分が揃っている時だけ)
+function statsForOwner(ownerId){
+  if(ownerId === state.user.userId) return state.myStats;
+  if(state.recordingAs && ownerId === state.recordingAs.userId && state.proxyStatsUserId === ownerId) return state.proxyStats;
+  return null;
+}
 function applyOptimisticShot(payload){
-  var stats = null;
-  if(payload.userId === state.user.userId) stats = state.myStats;
-  else if(state.recordingAs && payload.userId === state.recordingAs.userId) stats = state.proxyStats;
-  // 確率(スポット別・合計)への加算ルールはサーバーと同じにする:
-  // 指定なし記録は常に加算、シチュエーション付きはマイスポットの分だけ加算(ライブ記録は別枠のため加算しない)
-  if(stats && (!state.ym || payload.ym === state.ym)){
-    var spot = stats.spots.find(function(s){ return s.spotId === payload.spotId; });
-    var countsIntoSpot = !payload.situation || (spot && spot.scope === 'personal');
-    if(countsIntoSpot){
-      if(spot){ spot.makes += payload.makes; spot.attempts += payload.attempts; spot.pct = spot.attempts>0 ? Math.round(spot.makes/spot.attempts*1000)/10 : 0; }
-      var t = stats.total;
-      t.makes += payload.makes; t.attempts += payload.attempts; t.pct = t.attempts>0 ? Math.round(t.makes/t.attempts*1000)/10 : 0;
-      if(stats === state.myStats) renderMyStatsView(stats);
-    }
-  }
+  var stats = statsForOwner(payload.userId);
+  if(addRecToStats(stats, payload, 1) && stats === state.myStats) renderSelfMonthIfShown();
   applyOptimisticFest(payload);
   renderCourt();
   renderHistoryList();
@@ -801,9 +808,12 @@ function applyOptimisticFest(payload){
   if(!f || !f.enabled || f.isOver) return;
   if(payload.date < f.range.monday || payload.date > f.range.sunday) return; // フェス週の記録だけが対象
   var add = payload.attempts;
-  // 倍チャンスかどうかはサーバーが「土曜までの合計」で決めて mode に入れてくる(日曜の途中で変わらない)。クライアント側で条件を複製しない
-  if(f.isSunday && f.mode === 'double') add *= 2;
-  if(f.extra && f.isSunday){ f.extra.progress = (f.extra.progress||0) + payload.attempts; f.extra.achieved = f.extra.participants > 0 && f.extra.progress >= f.extra.target; }
+  // 倍チャンスかどうかはサーバーが「土曜までの合計」で決めて mode に入れてくる(日曜の途中で変わらない)。クライアント側で条件を複製しない。
+  // 倍になるのもエクストラに数えるのも「日曜の日付の記録」だけ(サーバーと同じ)。日曜に過去の日付で入れた記録は倍にしない。
+  // 編集・削除は差分(削除や減らした分はattemptsが負)で呼ばれ、同じ規則で日曜の日付の記録だけ倍になる
+  var sundayRec = payload.date === f.range.sunday;
+  if(sundayRec && f.mode === 'double') add *= 2;
+  if(f.extra && f.isSunday && sundayRec){ f.extra.progress = (f.extra.progress||0) + payload.attempts; f.extra.achieved = f.extra.participants > 0 && f.extra.progress >= f.extra.target; }
   f.rawTotal += payload.attempts;
   f.displayTotal += add;
   // 貢献は自分の記録だけ(ホストの代理記録は対象者の貢献であって自分の貢献ではない)
@@ -949,9 +959,21 @@ onTap(document.getElementById('levelUpCloseBtn'), function(){ document.getElemen
 // チーム/ライセンスタブも起動画面と同じ「前回データを即表示→裏で最新化」方式にする(体感ラグ削減)。
 // 応答順の入れ替わりで古いデータが後から画面を上書きしないよう、リクエスト連番で最後の要求だけを反映する
 var TAB_CACHE_PREFIX = 'tabCache_v1_';
-var tabLoadSeq = { team: 0, license: 0 };
+// キャッシュは画面の組み合わせ(人×期間×スポット…)ごとに増えるため、件数に上限を設けて古いものから消す
+// (ホストが全員分を見て回ると際限なく増え、端末の保存容量を圧迫するため)
+var TAB_CACHE_INDEX_KEY = 'tabCacheIndex_v1'; // 書いた順(古い順)のキー一覧
+var TAB_CACHE_MAX = 80;
+var tabLoadSeq = { team: 0, license: 0, my: 0, trend: 0, hist: 0, proxy: 0 };
 function readTabCache(key){ try{ return JSON.parse(localStorage.getItem(TAB_CACHE_PREFIX+key) || 'null'); }catch(e){ return null; } }
-function writeTabCache(key, d){ try{ localStorage.setItem(TAB_CACHE_PREFIX+key, JSON.stringify(d)); }catch(e){ /* 容量超過等は無視 */ } }
+function writeTabCache(key, d){
+  try{
+    localStorage.setItem(TAB_CACHE_PREFIX+key, JSON.stringify(d));
+    var idx = JSON.parse(localStorage.getItem(TAB_CACHE_INDEX_KEY) || '[]').filter(function(k){ return k !== key; });
+    idx.push(key);
+    while(idx.length > TAB_CACHE_MAX) localStorage.removeItem(TAB_CACHE_PREFIX + idx.shift());
+    localStorage.setItem(TAB_CACHE_INDEX_KEY, JSON.stringify(idx));
+  }catch(e){ /* 容量超過等は無視(キャッシュなしでも動く) */ }
+}
 
 function applyUserHeader(){
   var nameOverride = localStorage.getItem('displayNameOverride_' + state.user.userId);
@@ -974,6 +996,7 @@ function applyBootData(d, fromCache){
   document.getElementById('ymSel').value = d.ym;
   applyMyStats(d.myStats);
   applyHistory(d.history);
+  if(fromCache) state.historyFresh = false; // 前回起動時の控えの履歴(他の端末での記録が抜けている可能性がある)
   updateStreakBadge(d.streak || 0);
   state.myTrophies = d.myTrophies || [];
   state.trophyFamilies = d.trophyFamilies || [];
@@ -1057,6 +1080,7 @@ if(bootCache && bootCache.user && bootCache.data){
     celebrateBestStreakIfBroken((bootCache && !userChanged) ? bootCache.data : null, d); // キャッシュを上書きする前に前回値と比べる
     saveBootCache(d);
     trySyncPending(); // 通信できているタイミングで、未送信キューがあれば送っておく
+    setTimeout(prefetchTrendIfMissing, 3000); // 未送信分の送信を先に済ませてから、推移の初回分だけ先に取っておく
   }catch(e){
     console.warn('起動時の読み込みに失敗:', e);
     if(renderedFromCache && !userChanged){
@@ -1090,18 +1114,34 @@ function buildYmOptions(currentYm){
   }
   opts.forEach(function(o){ var el=document.createElement('option'); el.value=o.v; el.textContent=o.t; sel.appendChild(el); });
 }
-document.getElementById('ymSel').addEventListener('change', async function(e){
-  state.ym = e.target.value; await refreshAll();
+document.getElementById('ymSel').addEventListener('change', function(e){
+  state.ym = e.target.value; onYmChanged();
 });
+// 月を切り替えた時は、月によって変わるものだけを取り直す(最近の記録・ライセンス・推移は月に関係ないので取らない)。
+// 前に見たことのある月なら、端末に控えた値で即座に表示してから裏で最新化する
+function onYmChanged(){
+  var cached = readTabCache(selfMonthKey(state.ym));
+  if(cached){ cached.__fromCache = true; state.myStats = cached; renderGoalCard(cached); }
+  renderCourt();
+  var active = document.querySelector('nav button.active').dataset.tab;
+  var myStatsShown = active === 'my' && state.myPage === 'stats';
+  // 自分・その月の統計(コートの確率の元)。じぶんタブで自分・月を見ている時はloadMyViewが同じものを取るので二重に取らない
+  var selfLoad = (myStatsShown && myViewSpec().selfMonth) ? loadMyView() : loadMyStats();
+  Promise.resolve(selfLoad).then(renderCourt, function(){ /* 取得失敗時は控えの値のまま */ });
+  if(myStatsShown && !myViewSpec().selfMonth) loadMyView();
+  if(state.recordingAs) refreshProxyStats().then(renderCourt);
+  if(active === 'team' && state.teamPage !== 'license') loadTeam();
+}
 
+// 未送信分の送信後・サーバーに記録を拒否された後など、手元の概算を全部サーバーの正しい値に合わせ直す時に使う
 async function refreshAll(){
   await Promise.all([ loadMyStats(), loadHistory(), refreshProxyStats() ]);
   renderCourt();     // マイ確率をコートに反映
   var active = document.querySelector('nav button.active').dataset.tab;
   if(active==='my'){
     if(state.myPage==='trend') loadTrend();
-    // スタッツを週/日表示で見ている場合は、その粒度のまま表示を取り直す(月表示に戻さない)
-    else if(state.myGranularity!=='month') loadMyTabCustomStats();
+    // 自分・月の表示はloadMyStatsの中で描き直し済み。週/日や他の人を見ている場合はその表示のまま取り直す
+    else if(!myViewSpec().selfMonth) loadMyView();
   }
   if(active==='team'){
     if(state.teamPage==='license') loadLicense();
@@ -1138,7 +1178,10 @@ function renderCourt(){
   var wrap = document.getElementById('courtWrap');
   // 既存スポットDOMと空メッセージを削除(消し忘れると再描画のたびに増えていく)
   Array.prototype.slice.call(wrap.querySelectorAll('.spot, .court-empty')).forEach(function(n){n.remove();});
-  var statsSource = (state.recordingAs && state.proxyStats) ? state.proxyStats : state.myStats;
+  // 代理記録中は「その人の統計」が手元に揃うまで数字を出さない(以前は自分の確率を相手の名前の下に出していた)
+  var statsSource = state.recordingAs
+    ? ((state.proxyStats && state.proxyStatsUserId === state.recordingAs.userId) ? state.proxyStats : null)
+    : state.myStats;
   var my = {}; if(statsSource){ statsSource.spots.forEach(function(s){ my[s.spotId]=s; }); }
   document.getElementById('courtHint').textContent = state.recordingAs
     ? '「'+state.recordingAs.name+'」さんの成績を表示中・スポットをタップして記録'
@@ -1209,7 +1252,9 @@ function personalSitsFor(sp){
 // 代理記録中に相手の統計がまだ取れていない間は「不明(=未解放扱い)」にする。
 // 自分の統計で代用すると、自分の解放状態が相手の記録に適用されてしまうため
 function liveStatsSource(){
-  if(state.recordingAs) return state.proxyStats && state.proxyStatsUserId === state.recordingAs.userId ? state.proxyStats : null;
+  // 相手の統計は、端末の控え(__fromCache)では解放判定に使わない。控えは古い可能性があり、未解放のスポットに
+  // ライブのシチュエーションを付けて保存してしまうおそれがあるため(控えは表示の即時化にだけ使う)
+  if(state.recordingAs) return state.proxyStats && state.proxyStatsUserId === state.recordingAs.userId && !state.proxyStats.__fromCache ? state.proxyStats : null;
   return state.myStats;
 }
 function liveForSpot(spotId){
@@ -1317,6 +1362,12 @@ function openRecord(sp){
 function openEditShot(item){
   state.current = { id: item.spotId, name: item.spot };
   state.editingShotId = item.id;
+  // 編集前の値を控える(保存・削除の瞬間に画面へ差分を反映するため)。履歴は表示中の人の分なので持ち主はその人
+  state.editingItem = { id: item.id, spotId: item.spotId, makes: item.makes, attempts: item.attempts, date: item.date, ym: item.ym,
+    situation: item.situation || '', userId: state.recordingAs ? state.recordingAs.userId : state.user.userId };
+  // 編集画面を開くたびに札を発行し、保存・削除はこの札で1回だけ処理する。LINEのWebViewは無効化したボタンでも
+  // タップが届くため、二度押しで差分が二重に反映されたり、削除が二重に送られたりするのを防ぐ(新規記録のsaveTokenと同じ考え方)
+  state.editToken = genId();
   rec = { makes: item.makes, attempts: item.attempts };
   editSituation = item.situation || '';
   var who = state.recordingAs ? '・'+state.recordingAs.name+'さん' : '';
@@ -1415,33 +1466,27 @@ onTap(document.getElementById('recSave'), async function(){
   var target = state.recordingAs || { userId: state.user.userId, name: state.user.displayName };
   var dateVal = document.getElementById('recDate').value || todayStr();
 
+  if(state.editingShotId){
+    if(handledSaveTokens[state.editToken]) return; // 二度押しを無視(編集画面1回につき1回だけ処理する)
+    handledSaveTokens[state.editToken] = true;
+  }
   // 未送信(まだサーバーに届いていない)記録の編集は、通信不要でその場で直す
   if(state.editingShotId && isPendingId(state.editingShotId)){
     var p = findPending(state.editingShotId);
-    // 確率にはスポットシューティング(指定なし)だけを数えるため、編集前後それぞれ
-    // 「数えられていたか」を見て差分を出す(例: 指定なし→HOに変えたら確率からは丸ごと引く)
-    var oldCounted = !p.situation, newCounted = !editSituation;
-    var diffMakes = (newCounted ? rec.makes : 0) - (oldCounted ? p.makes : 0);
-    var diffAttempts = (newCounted ? rec.attempts : 0) - (oldCounted ? p.attempts : 0);
+    var pBefore = { spotId: p.spotId, makes: p.makes, attempts: p.attempts, date: p.date, ym: p.ym, situation: p.situation || '', userId: p.userId };
     p.makes = rec.makes; p.attempts = rec.attempts; p.date = dateVal; p.ym = dateVal.slice(0,7);
     p.situation = editSituation;
     savePendingToStorage();
     closeRecord();
     toast('未送信の記録を更新しました');
-    if(p.userId===state.user.userId && state.myStats && (!state.ym || p.ym===state.ym)){
-      var editSpot = state.myStats.spots.find(function(s){ return s.spotId===p.spotId; });
-      if(editSpot){ editSpot.makes+=diffMakes; editSpot.attempts+=diffAttempts; editSpot.pct = editSpot.attempts>0?Math.round(editSpot.makes/editSpot.attempts*1000)/10:0; }
-      var et = state.myStats.total;
-      et.makes+=diffMakes; et.attempts+=diffAttempts; et.pct = et.attempts>0?Math.round(et.makes/et.attempts*1000)/10:0;
-      renderMyStatsView(state.myStats);
-    }
-    renderHistoryList(); renderCourt();
+    applyOptimisticChange(pBefore, p);
     return;
   }
 
-  // ---- 既存記録の編集(サーバー確定済みの記録): 通信を待ってから閉じる ----
+  // ---- 既存記録の編集(サーバー確定済みの記録): 新規記録と同じく、タップした瞬間に閉じて反映し、送信は裏で行う ----
+  // (以前は通信が終わるまで「保存中…」で待たせていた。GASは何もしない処理でも1往復1秒以上かかるため、待たせない作りにする)
   if(state.editingShotId){
-    if(btn.dataset.busy) return; // disabledはタップイベントを止めないため、フラグで再入を防ぐ
+    var orig = (state.editingItem && state.editingItem.id === state.editingShotId) ? state.editingItem : null;
     var updatePayload = {
       shotId: state.editingShotId, actingUserId: state.user.userId,
       makes: rec.makes, attempts: rec.attempts,
@@ -1449,32 +1494,14 @@ onTap(document.getElementById('recSave'), async function(){
       situation: editSituation,
       viewYm: state.ym
     };
-    try{
-      btn.dataset.busy='1'; btn.disabled=true; btn.textContent='保存中…';
-      var res = await api('updateShot', updatePayload);
-      toast('更新しました ✅');
-      closeRecord();
-      applyMyStats(res.myStats);
-      applyFestStatus(res.fest);
-      if(res.streak != null) updateStreakBadge(res.streak);
-      if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
-      else{ applyHistory(res.history); }
-      renderCourt();
-    }catch(e){
-      if(e.isNetworkError){
-        // オフライン: 操作をキューに貯めて後で自動送信する。表示中の履歴にはその場で反映する
-        addPendingOp('updateShot', updatePayload);
-        var hi = state.historyItems.find(function(h){ return h.id === updatePayload.shotId; });
-        if(hi){ hi.makes = rec.makes; hi.attempts = rec.attempts; hi.date = dateVal; hi.ym = dateVal.slice(0,7);
-          hi.situation = editSituation; hi.pct = rec.attempts>0 ? Math.round(rec.makes/rec.attempts*1000)/10 : 0; hi.pendingEdit = true; }
-        closeRecord();
-        renderHistoryList();
-        toast('📴 電波が弱いため編集を保存待ちにしました(自動で送信します)');
-      }else{
-        toast('エラー: '+e.message);
-      }
-    }
-    finally{ delete btn.dataset.busy; btn.disabled=false; btn.textContent='保存する'; }
+    var edited = orig ? { spotId: orig.spotId, makes: rec.makes, attempts: rec.attempts, date: dateVal, ym: dateVal.slice(0,7), situation: editSituation, userId: orig.userId } : null;
+    var hi = state.historyItems.find(function(h){ return h.id === updatePayload.shotId; });
+    if(hi){ hi.makes = rec.makes; hi.attempts = rec.attempts; hi.date = dateVal; hi.ym = dateVal.slice(0,7);
+      hi.situation = editSituation; hi.pct = rec.attempts>0 ? Math.round(rec.makes/rec.attempts*1000)/10 : 0; }
+    closeRecord();
+    applyOptimisticChange(orig, edited);
+    toast('更新しました ✅');
+    enqueueShotOp(function(){ return sendShotOp('updateShot', updatePayload, hi); });
     return;
   }
 
@@ -1557,7 +1584,9 @@ onTap(document.getElementById('recSave'), async function(){
   })();
 });
 onTap(document.getElementById('recDeleteBtn'), async function(){
+  if(handledSaveTokens[state.editToken]) return; // この編集画面で既に保存・削除した(二度押し)なら無視
   if(!confirm('この記録を削除しますか？')) return;
+  handledSaveTokens[state.editToken] = true;
   var btn = document.getElementById('recDeleteBtn');
 
   // 未送信の記録はキューから消すだけ(サーバーには元々届いていない)
@@ -1566,54 +1595,74 @@ onTap(document.getElementById('recDeleteBtn'), async function(){
     removePending(state.editingShotId);
     closeRecord();
     toast('未送信の記録を取り消しました');
-    // ライブ記録は確率に足していないため、取り消し時も引かない
-    if(!delP.situation && delP.userId===state.user.userId && state.myStats && (!state.ym || delP.ym===state.ym)){
-      var delSpot = state.myStats.spots.find(function(s){ return s.spotId===delP.spotId; });
-      if(delSpot){ delSpot.makes-=delP.makes; delSpot.attempts-=delP.attempts; delSpot.pct = delSpot.attempts>0?Math.round(delSpot.makes/delSpot.attempts*1000)/10:0; }
-      var dt = state.myStats.total;
-      dt.makes-=delP.makes; dt.attempts-=delP.attempts; dt.pct = dt.attempts>0?Math.round(dt.makes/dt.attempts*1000)/10:0;
-      renderMyStatsView(state.myStats);
-    }
-    renderHistoryList(); renderCourt();
+    applyOptimisticChange(delP, null);
     return;
   }
 
+  // 送信済みの記録の削除も、その場で消して反映し、送信は裏で行う(以前は通信が終わるまで画面が閉じなかった)
+  var delOrig = (state.editingItem && state.editingItem.id === state.editingShotId) ? state.editingItem : null;
+  var delPayload = { shotId: state.editingShotId, actingUserId: state.user.userId, viewYm: state.ym };
+  state.historyItems = state.historyItems.filter(function(h){ return h.id !== delPayload.shotId; });
+  closeRecord();
+  applyOptimisticChange(delOrig, null);
+  toast('削除しました');
+  enqueueShotOp(function(){ return sendShotOp('deleteShot', delPayload, null); });
+});
+
+// 記録の編集・削除を、その場で画面(確率・フェス・履歴・コート)に反映する。before=変更前、after=変更後(null=削除)。
+// 規則は新規記録(applyOptimisticShot)と同じ。正しい値はサーバー応答で上書きされる
+function applyOptimisticChange(before, after){
+  var ref = before || after;
+  if(!ref){ renderHistoryList(); renderCourt(); return; } // 変更前後が取れない時は見た目の差分反映だけ諦める(送信は呼び出し側で必ず行う)
+  var owner = ref.userId;
+  var stats = statsForOwner(owner);
+  var changed = false;
+  if(before) changed = addRecToStats(stats, before, -1) || changed;
+  if(after) changed = addRecToStats(stats, after, 1) || changed;
+  if(changed && stats === state.myStats) renderSelfMonthIfShown();
+  if(before) applyOptimisticFest({ date: before.date, attempts: -before.attempts, userId: owner });
+  if(after) applyOptimisticFest({ date: after.date, attempts: after.attempts, userId: owner });
+  renderHistoryList(); renderCourt();
+}
+// 記録の編集・削除の送信は、操作した順番どおりに1件ずつ行う
+// (同じ記録を続けて編集した時に、古い内容の送信が後から届いて新しい内容を上書きしないように)
+var shotOpChain = Promise.resolve();
+function enqueueShotOp(fn){ shotOpChain = shotOpChain.then(fn, fn); return shotOpChain; }
+async function sendShotOp(action, payload, historyItem){
   try{
-    btn.disabled=true;
-    var delPayload = { shotId: state.editingShotId, actingUserId: state.user.userId, viewYm: state.ym };
-    var res;
-    try{
-      res = await api('deleteShot', delPayload);
-    }catch(e){
-      if(e.isNetworkError){
-        // オフライン: 削除操作をキューに貯めて後で自動送信する。表示中の履歴からはその場で消す
-        addPendingOp('deleteShot', delPayload);
-        state.historyItems = state.historyItems.filter(function(h){ return h.id !== delPayload.shotId; });
-        closeRecord();
-        renderHistoryList();
-        toast('📴 電波が弱いため削除を保存待ちにしました(自動で送信します)');
-        return;
-      }
-      throw e;
-    }
-    closeRecord();
-    toast('削除しました');
+    var res = await api(action, payload);
     applyMyStats(res.myStats);
     applyFestStatus(res.fest);
     if(res.streak != null) updateStreakBadge(res.streak);
-    if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
+    if(state.recordingAs){ loadHistory(); refreshProxyStats().then(renderCourt); }
     else{ applyHistory(res.history); }
     renderCourt();
-  }catch(e){ toast('エラー: '+e.message); }
-  finally{ btn.disabled=false; }
-});
+  }catch(e){
+    if(e.isNetworkError){
+      // オフライン: 操作を端末に貯めて後で自動送信する(画面には反映済み)
+      addPendingOp(action, payload);
+      if(historyItem){ historyItem.pendingEdit = true; renderHistoryList(); }
+      toast(action === 'deleteShot' ? '📴 電波が弱いため削除を保存待ちにしました(自動で送信します)' : '📴 電波が弱いため編集を保存待ちにしました(自動で送信します)');
+    }else{
+      // サーバーに拒否された(権限・入力エラー等)。先に反映した見た目を正しい値に戻す
+      toast((action === 'deleteShot' ? '削除できませんでした: ' : '更新できませんでした: ') + e.message);
+      refreshAll();
+    }
+  }
+}
 
 // ================= マイ =================
+// 自分・月の統計(サーバー応答)を反映する。state.myStatsは常に「自分・表示中の月」の値だけを持つ
 function applyMyStats(stats){
+  if(!stats) return;
+  // 送った後に月を切り替えていたら、その応答は今の月の値ではないので使わない(別の月の数字でコートが上書きされるのを防ぐ)
+  if((stats.period || '') !== (state.ym || '')) return;
   detectLiveUnlocks(state.myStats, stats, state.user.userId);
   detectGoalAchievement(state.myStats, stats);
   state.myStats = stats;
-  renderMyStatsView(stats);
+  writeTabCache(selfMonthKey(state.ym), stats);
+  // じぶんタブで「自分・月」を見ている時だけ描き直す(以前は週/日や他の人を見ている最中でも、記録の応答で自分・月に上書きしていた)
+  renderSelfMonthIfShown();
   renderGoalCard(stats);
 }
 
@@ -1897,6 +1946,7 @@ function predictLiveUnlock(payload){
     if(payload.date < LIVE_EPOCH_DATE) return;
     var viewUserId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
     if(viewUserId !== payload.userId) return;                            // 手元の履歴が対象者のものである時だけ
+    if(!state.historyFresh) return;                                      // 端末の控え(古いかもしれない履歴)では判定しない
     var live = liveForSpot(payload.spotId);
     if(live && live.unlocked) return;                                    // 既に解放済み
 
@@ -2152,14 +2202,52 @@ function renderMyStatsView(stats){
     }
   }
 }
+// 自分・表示中の月の統計(state.myStats)を最新化する。コートの確率・週目標・ライブ判定の元なので、
+// じぶんタブで他の人や週/日を見ている時でも、常に自分・月の分を取る
 async function loadMyStats(){
+  applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
+}
+// じぶんタブで今見ている組み合わせ(誰・粒度・期間)。キャッシュのキーと「今それを表示してよいか」の判定に使う
+function myViewSpec(){
   var target = myStatsTargetId();
-  if(target){
-    // 他人の分を見るだけ(ホスト限定)。state.myStatsや演出判定には一切触れない
-    renderMyStatsView(await api('getMyStats', { userId: state.user.userId, targetUserId: target, ym: state.ym }));
-  }else{
-    applyMyStats(await api('getMyStats', { userId: state.user.userId, ym: state.ym }));
+  var g = state.myGranularity;
+  var period = g === 'month' ? (state.ym || '') : (document.getElementById('myPeriodDate').value || todayStr());
+  return { target: target, granularity: g, period: period, selfMonth: !target && g === 'month',
+    key: 'my_' + [state.user.userId, target || 'me', g, period].join('_') };
+}
+function selfMonthKey(ym){ return 'my_' + [state.user.userId, 'me', 'month', ym || ''].join('_'); }
+function renderSelfMonthIfShown(){ if(state.myStats && myViewSpec().selfMonth) renderMyStatsView(state.myStats); }
+// 初めて見る組み合わせで手元に何も無い時は、前の表示を新しい見出しの下に残さず「読み込み中」にする
+// (以前は前の人・前の期間の数字が、切り替えた後も通信が終わるまで表示されていた)
+function showMyStatsLoading(msg){
+  document.getElementById('myTotal').textContent = '';
+  document.getElementById('myStats').innerHTML = '<div class="muted center" style="padding:16px">' + (msg || '読み込み中…') + '</div>';
+  var sc = document.getElementById('mySituationsCard'); if(sc) sc.classList.add('hidden');
+}
+// じぶんタブ(スタッツ)の表示。①手元の値ですぐ描く(自分・月は起動時/記録時に最新化済みのstate.myStats、
+// それ以外は前回その組み合わせを見た時の控え) ②裏で最新を取って差し替える。
+// 切替が連続しても、最後に選んだ組み合わせの応答だけを描く(応答の順番が入れ替わっても古い表示で上書きしない)
+async function loadMyView(){
+  var spec = myViewSpec();
+  var seq = ++tabLoadSeq.my;
+  var instant = null;
+  if(spec.selfMonth && state.myStats && (state.myStats.period || '') === spec.period) instant = state.myStats;
+  if(!instant){ instant = readTabCache(spec.key); if(instant) instant.__fromCache = true; }
+  if(instant) renderMyStatsView(instant); else showMyStatsLoading();
+  var payload = { userId: state.user.userId };
+  if(spec.target) payload.targetUserId = spec.target;
+  if(spec.granularity === 'month') payload.ym = state.ym;
+  else { payload.granularity = spec.granularity; payload.period = spec.period; }
+  var d;
+  try{ d = await api('getMyStats', payload); }
+  catch(e){
+    if(seq === tabLoadSeq.my && !instant) showMyStatsLoading('📴 取得できませんでした(電波の良い場所で開き直してください)');
+    return;
   }
+  if(spec.selfMonth){ applyMyStats(d); return; } // 状態の更新・控えの保存・(まだ表示中なら)描画はapplyMyStatsが行う
+  writeTabCache(spec.key, d);
+  if(seq !== tabLoadSeq.my) return;
+  renderMyStatsView(d);
 }
 // じぶんタブのスタッツで表示する対象。null=自分、'__team__'=チーム合算、userId=ホストが選んだ他のメンバー
 function myStatsTargetId(){
@@ -2186,7 +2274,7 @@ document.getElementById('myStatsWho').addEventListener('change', refreshMyTab);
 onTap(document.getElementById('myGranMonth'), function(){ setMyGranularity('month'); });
 onTap(document.getElementById('myGranWeek'), function(){ setMyGranularity('week'); });
 onTap(document.getElementById('myGranDay'), function(){ setMyGranularity('day'); });
-document.getElementById('myPeriodDate').addEventListener('change', loadMyTabCustomStats);
+document.getElementById('myPeriodDate').addEventListener('change', loadMyView);
 function setMyGranularity(g){
   state.myGranularity = g;
   document.getElementById('myGranMonth').classList.toggle('active', g==='month');
@@ -2197,24 +2285,21 @@ function setMyGranularity(g){
   if(g!=='month' && !dateInput.value) dateInput.value = todayStr();
   refreshMyTab();
 }
-async function loadMyTabCustomStats(){
-  var dateVal = document.getElementById('myPeriodDate').value || todayStr();
-  var payload = { userId: state.user.userId, granularity: state.myGranularity, period: dateVal };
-  var target = myStatsTargetId();
-  if(target) payload.targetUserId = target;
-  renderMyStatsView(await api('getMyStats', payload));
-}
 function refreshMyTab(){
   // 他人の分を見ている間は自分の週目標カードを隠す(他人の目標は表示できず、自分の数字が混ざると誤解を生むため)
   var goalCard = document.getElementById('myGoalCard');
   if(goalCard) goalCard.classList.toggle('hidden', !!myStatsTargetId());
-  if(state.myGranularity==='month'){ loadMyStats(); }
-  else { loadMyTabCustomStats(); }
+  loadMyView();
 }
 
 // ================= 履歴 =================
-function applyHistory(items){
+// 最近の記録(サーバー確定分)。targetIdはその履歴の持ち主(省略時は自分)
+function histKey(targetId){ return 'hist_' + state.user.userId + '_' + targetId; }
+function applyHistory(items, targetId){
   state.historyItems = items; // 未送信分と合成するため、サーバー確定分を保持しておく
+  state.historyFresh = true;  // サーバーから届いた最新の履歴(端末の控えではない)
+  state.historyLoading = false;
+  writeTabCache(histKey(targetId || state.user.userId), items);
   renderHistoryList();
 }
 function renderHistoryList(){
@@ -2229,7 +2314,7 @@ function renderHistoryList(){
     });
   var merged = pendingView.concat(state.historyItems);
   var host=document.getElementById('historyList'); host.innerHTML='';
-  document.getElementById('histCount').textContent = merged.length? '':'まだありません';
+  document.getElementById('histCount').textContent = merged.length ? '' : (state.historyLoading ? '読み込み中…' : 'まだありません');
   merged.forEach(function(it){
     var el=document.createElement('div'); el.className='listitem'; el.style.cursor='pointer';
     var tag = (it.pending || it.pendingEdit) ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>' : '';
@@ -2240,11 +2325,23 @@ function renderHistoryList(){
     host.appendChild(el);
   });
 }
+// 表示中の人(自分、または代理記録の相手)の最近の記録。前に見た人なら控えで即表示→裏で最新化。
+// 控えの履歴はライブ解放の即時判定(predictLiveUnlock)には使わない(古い履歴で判定すると誤って演出が出るため)
 async function loadHistory(){
   var targetId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
   document.getElementById('historyTitle').textContent = state.recordingAs ? state.recordingAs.name+'さんの最近の記録' : '最近の記録';
-  var d = await api('getHistory', { userId: state.user.userId, targetUserId: targetId, limit: 20 });
-  applyHistory(d.items);
+  var seq = ++tabLoadSeq.hist;
+  var cached = readTabCache(histKey(targetId));
+  state.historyItems = cached || []; // 別の人の履歴を新しい見出しの下に残さない
+  state.historyFresh = false;
+  state.historyLoading = !cached;
+  renderHistoryList();
+  var d;
+  try{ d = await api('getHistory', { userId: state.user.userId, targetUserId: targetId, limit: 20 }); }
+  catch(e){ if(seq === tabLoadSeq.hist){ state.historyLoading = false; renderHistoryList(); } throw e; }
+  var nowTarget = state.recordingAs ? state.recordingAs.userId : state.user.userId;
+  if(seq !== tabLoadSeq.hist || nowTarget !== targetId){ writeTabCache(histKey(targetId), d.items); return; }
+  applyHistory(d.items, targetId);
 }
 
 // ================= チーム =================
@@ -2538,22 +2635,54 @@ function fillTrendWhoSelector(){
   }
   if(prev && Array.prototype.some.call(sel.options, function(o){ return o.value===prev; })) sel.value = prev;
 }
-async function loadTrend(){
-  renderTrendPageRow();
-  // 本数の推移を気にしているのはホストだけなので、切替ボタンごとホスト限定で出す
-  document.getElementById('trendMetricRow').classList.toggle('hidden', !state.isHost);
-  if(!state.isHost && state.trendMetric !== 'pct') setTrendMetric('pct');
+// 今の画面の選択から、推移の送信内容と控えのキーを作る(表示と先読みで同じものを使う)
+function trendRequestFromUI(){
   var spotId=document.getElementById('trendSpotSel').value;
-  if(!spotId) return;
+  if(!spotId) return null;
   var who=document.getElementById('trendWho').value;
   var targetUserId = who==='me' ? state.user.userId : (who==='team' ? '' : who);
   var g = state.trendGranularity;
   // ライブページではシチュエーション指定(__live__=全ライブ合計)を付ける。スポットページは指定なし記録のみ
   var payload = { spotId: spotId, userId: state.user.userId, targetUserId: targetUserId, granularity: g };
   if(state.trendPage === 'live') payload.situation = document.getElementById('trendSituationSel').value;
-  var d = await api('getTrend', payload);
+  return { payload: payload, key: 'trend_' + [state.user.userId, targetUserId, spotId, g, payload.situation || ''].join('_') };
+}
+// 初めて見る組み合わせで手元に何も無い時は、前のグラフを新しい選択の下に残さず「読み込み中」にする
+function showTrendLoading(msg){
+  if(state.chart){ state.chart.destroy(); state.chart = null; }
+  document.getElementById('trendTable').innerHTML = '<div class="muted center" style="padding:16px">' + (msg || '読み込み中…') + '</div>';
+}
+// 推移の表示。じぶんタブと同じく、前に見た組み合わせは控えで即表示→裏で最新化し、最後に選んだものだけを描く
+async function loadTrend(){
+  renderTrendPageRow();
+  // 本数の推移を気にしているのはホストだけなので、切替ボタンごとホスト限定で出す
+  document.getElementById('trendMetricRow').classList.toggle('hidden', !state.isHost);
+  if(!state.isHost && state.trendMetric !== 'pct') setTrendMetric('pct');
+  var req = trendRequestFromUI();
+  if(!req) return;
+  var seq = ++tabLoadSeq.trend;
+  var cached = readTabCache(req.key);
+  if(cached){ state.trendPoints = cached; renderTrendChart(cached); } else showTrendLoading();
+  var d;
+  try{ d = await api('getTrend', req.payload); }
+  catch(e){
+    if(seq === tabLoadSeq.trend && !cached) showTrendLoading('📴 取得できませんでした(電波の良い場所で開き直してください)');
+    return;
+  }
+  writeTabCache(req.key, d.points);
+  if(seq !== tabLoadSeq.trend) return;
   state.trendPoints = d.points;
   renderTrendChart(d.points);
+}
+// 推移は「初めて開いた時」だけ待ちが出る(2回目以降は控えで即表示)。起動後に、今の選択のまま1回だけ先に取っておく。
+// 控えが既にある時は取らない(通信を増やさない)
+async function prefetchTrendIfMissing(){
+  try{
+    var req = trendRequestFromUI();
+    if(!req || readTabCache(req.key)) return;
+    var d = await api('getTrend', req.payload, { retries: 0 });
+    writeTabCache(req.key, d.points);
+  }catch(e){ /* 先読みの失敗は無視(開いた時に通常どおり取りに行く) */ }
 }
 function renderTrendChart(points){
   var g = state.trendGranularity;
@@ -2626,34 +2755,50 @@ document.getElementById('proxySel').addEventListener('change', async function(){
     renderProxyUI();
     fillTrendWhoSelector();
     fillMyStatsWhoSelector();
-    await refreshProxyStats();
-    await loadHistory();
-    renderCourt();
+    await switchProxyTarget();
     return;
   }
   if(!sel.value){ state.recordingAs = null; }
   else{ state.recordingAs = state.members.find(function(x){ return x.userId===sel.value; }) || null; }
   updateProxyHint();
-  await refreshProxyStats();
-  await loadHistory();
-  renderCourt();
+  await switchProxyTarget();
 });
+// 代理記録の相手を切り替えた時: 相手の統計と最近の記録を並行して取る(以前は1つずつ待っていたため2往復分かかった)。
+// どちらも前に選んだ相手なら控えで即表示し、控えが無ければ数字なし・「読み込み中」で待つ
+async function switchProxyTarget(){
+  var statsP = refreshProxyStats(), histP = loadHistory();
+  renderCourt();
+  await statsP; renderCourt();
+  try{ await histP; }catch(e){ /* 履歴が取れなくても記録はできる(控えがあれば表示済み) */ }
+}
 function updateProxyHint(){
   document.getElementById('proxyHint').textContent = state.recordingAs
     ? '現在「'+state.recordingAs.name+'」さんの記録として保存されます(コートにその人の成績を表示中)'
     : '現在は自分の記録として保存されます';
 }
+// 代理記録中の相手の統計(表示中の月)。前にその人を見たことがあれば控えで即座にコートへ出し、裏で最新化する。
+// 控えのキーはじぶんタブで「その人・月」を見た時と同じなので、どちらで見ても控えが共有される
 async function refreshProxyStats(){
   if(!state.recordingAs){ state.proxyStats = null; state.proxyStatsUserId = null; return; }
+  var freshFor = state.recordingAs.userId;
+  var key = 'my_' + [state.user.userId, freshFor, 'month', state.ym || ''].join('_');
+  var seq = ++tabLoadSeq.proxy;
+  if(state.proxyStatsUserId !== freshFor || !state.proxyStats || (state.proxyStats.period || '') !== (state.ym || '')){
+    var cached = readTabCache(key);
+    if(cached){ cached.__fromCache = true; state.proxyStats = cached; state.proxyStatsUserId = freshFor; }
+    else { state.proxyStats = null; state.proxyStatsUserId = null; } // 別の人の数字を残さない
+  }
   try{
-    var freshFor = state.recordingAs.userId;
     var fresh = await api('getMyStats', { userId: state.user.userId, targetUserId: freshFor, ym: state.ym });
+    writeTabCache(key, fresh);
+    // 待っている間に相手や月が変わっていたら、この応答は使わない
+    if(seq !== tabLoadSeq.proxy || !state.recordingAs || state.recordingAs.userId !== freshFor) return;
     // 代理記録中の相手が解放した瞬間もホストの画面で祝う(対象者が同じ人のときだけ比較する)
     detectLiveUnlocks(state.proxyStatsUserId === freshFor ? state.proxyStats : null, fresh, freshFor);
     state.proxyStats = fresh;
     state.proxyStatsUserId = freshFor;
   }
-  catch(e){ state.proxyStats = null; state.proxyStatsUserId = null; }
+  catch(e){ /* 取れなかった時は控えの値(無ければ数字なし)のまま。解放判定は控えでは行わない */ }
 }
 
 // ================= 設定(表示名) =================

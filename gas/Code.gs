@@ -401,13 +401,33 @@ function actionRecordShot_(body) {
   };
 }
 
+// 編集・削除の後に返す内容(記録直後の画面を正しい値に合わせ直すため)。shotsは書き込み後の全記録
+function shotChangeResult_(id, actingUserId, shots, viewYmRaw, extra) {
+  var spots = getSpots_(actingUserId);
+  var viewYm = String(viewYmRaw || '') || null;
+  var out = {
+    id: id,
+    myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
+    history: computeHistory_(spots, shots, actingUserId, 20),
+    streak: computeStreak_(shots, actingUserId),
+    fest: getFestStatus_(actingUserId, shots) // 本数を変えたらチーム合計も変わるため一緒に返す
+  };
+  for (var k in (extra || {})) out[k] = extra[k];
+  return out;
+}
+
+// 記録の編集。以前は①ロック無しで行番号を探す ②セルを1つずつ最大6回書く ③書いた後にキャッシュを消して
+// シート全体を読み直す、という作りで、編集のたびに全行の読み込みが2回と書き込みの往復が最大6回発生していた。
+// 今はロックの中で1回だけ読み、変更は1回の書き込みにまとめ、書いた結果は手元のデータでキャッシュに入れ直す
 function actionUpdateShot_(body) {
   var id = String(body.shotId || '');
   var actingUserId = String(body.actingUserId || body.userId || '');
-  var sh = getSheet_(SHEET_SHOTS);
-  var rows = sh.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) !== id) continue;
+  var normalized = withShotsWriteLock_(function () {
+    var sh = getSheet_(SHEET_SHOTS);
+    var rows = sh.getDataRange().getValues();
+    var i = -1;
+    for (var r = 1; r < rows.length; r++) { if (String(rows[r][0]) === id) { i = r; break; } }
+    if (i === -1) throw new Error('記録が見つかりません');
     var ownerId = String(rows[i][4]);
     if (ownerId !== actingUserId && !isHost_(actingUserId)) throw new Error('この記録を編集する権限がありません');
 
@@ -416,81 +436,70 @@ function actionUpdateShot_(body) {
     if (!(attempts > 0)) throw new Error('試投数は1以上にしてください');
     if (makes > attempts) throw new Error('メイク数が試投数を超えています');
 
+    var ymVal = rows[i][2], dateVal = rows[i][3];
     if (body.date) {
       var d = new Date(String(body.date) + 'T00:00:00');
-      sh.getRange(i + 1, 3).setValue(ymOf_(d));
-      sh.getRange(i + 1, 4).setValue(dateOf_(d));
+      ymVal = ymOf_(d); dateVal = dateOf_(d);
     }
-    sh.getRange(i + 1, 8).setValue(makes);
-    sh.getRange(i + 1, 9).setValue(attempts);
-    if (body.situation != null) sh.getRange(i + 1, 10).setValue(String(body.situation).trim().slice(0, 20));
-    invalidateShotsCache_();
-
-    var spots = getSpots_(actingUserId);
-    var shots = getShots_();
-    var viewYm = String(body.viewYm || '') || null;
-    return {
-      id: id,
-      myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
-      history: computeHistory_(spots, shots, actingUserId, 20),
-      streak: computeStreak_(shots, actingUserId),
-      fest: getFestStatus_(actingUserId, shots) // 本数を編集したらチーム合計も変わるため一緒に返す
-    };
-  }
-  throw new Error('記録が見つかりません');
+    var sitVal = body.situation != null ? String(body.situation).trim().slice(0, 20) : (rows[i][9] != null ? rows[i][9] : '');
+    // 3〜10列目(ym, date, userId, displayName, spotId, makes, attempts, situation)を1回で書く。
+    // userId・displayName・spotIdは読んだ値をそのまま書き戻す(ここでは変えない)
+    sh.getRange(i + 1, 3, 1, 8).setValues([[ymVal, dateVal, rows[i][4], rows[i][5], rows[i][6], makes, attempts, sitVal]]);
+    rows[i][2] = ymVal; rows[i][3] = dateVal; rows[i][7] = makes; rows[i][8] = attempts; rows[i][9] = sitVal;
+    var norm = normalizeShotRows_(rows);
+    putShotsCache_(norm);
+    return norm;
+  });
+  return shotChangeResult_(id, actingUserId, shotsFromRows_(normalized), body.viewYm);
 }
 
 function actionDeleteShot_(body) {
   var id = String(body.shotId || '');
   var actingUserId = String(body.actingUserId || body.userId || '');
-  var sh = getSheet_(SHEET_SHOTS);
-  var rows = sh.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) !== id) continue;
-    var ownerId = String(rows[i][4]);
-    if (ownerId !== actingUserId && !isHost_(actingUserId)) throw new Error('この記録を削除する権限がありません');
-    sh.deleteRow(i + 1);
-    invalidateShotsCache_();
-
-    var spots = getSpots_(actingUserId);
-    var shots = getShots_();
-    var viewYm = String(body.viewYm || '') || null;
-    return {
-      id: id,
-      myStats: computeMyStats_(spots, shots, actingUserId, 'month', viewYm),
-      history: computeHistory_(spots, shots, actingUserId, 20),
-      streak: computeStreak_(shots, actingUserId),
-      fest: getFestStatus_(actingUserId, shots) // 記録を消したらチーム合計も減るため一緒に返す
-    };
-  }
+  var found = false;
+  var normalized = withShotsWriteLock_(function () {
+    var sh = getSheet_(SHEET_SHOTS);
+    var rows = sh.getDataRange().getValues();
+    for (var i = 1; i < rows.length; i++) {
+      if (String(rows[i][0]) !== id) continue;
+      var ownerId = String(rows[i][4]);
+      if (ownerId !== actingUserId && !isHost_(actingUserId)) throw new Error('この記録を削除する権限がありません');
+      sh.deleteRow(i + 1);
+      rows.splice(i, 1);
+      found = true;
+      var norm = normalizeShotRows_(rows);
+      putShotsCache_(norm);
+      return norm;
+    }
+    return null;
+  });
   // 見つからない場合は「既に削除済み」(通信リトライによる二重実行など)とみなし、成功として最新の統計を返す
-  var spotsGone = getSpots_(actingUserId);
-  var shotsGone = getShots_();
-  var viewYmGone = String(body.viewYm || '') || null;
-  return {
-    id: id, alreadyDeleted: true,
-    myStats: computeMyStats_(spotsGone, shotsGone, actingUserId, 'month', viewYmGone),
-    history: computeHistory_(spotsGone, shotsGone, actingUserId, 20),
-    streak: computeStreak_(shotsGone, actingUserId),
-    fest: getFestStatus_(actingUserId, shotsGone)
-  };
+  if (!found) return shotChangeResult_(id, actingUserId, getShots_(), body.viewYm, { alreadyDeleted: true });
+  return shotChangeResult_(id, actingUserId, shotsFromRows_(normalized), body.viewYm);
 }
 
+// 表示名の変更。以前はその人の記録1件ごとにセルを1つずつ書いていた(記録200件なら200往復)。
+// 表示名の列をまとめて読み、1回で書き戻す
 function actionRenameUser_(body) {
   var userId = String(body.userId || '');
   var newName = String(body.displayName || '').trim();
   if (!userId) throw new Error('userId が空です');
   if (!newName) throw new Error('表示名が空です');
-  var sh = getSheet_(SHEET_SHOTS);
-  var rows = sh.getDataRange().getValues();
-  var updated = 0;
-  for (var i = 1; i < rows.length; i++) {
-    if (String(rows[i][4]) === userId) {
-      sh.getRange(i + 1, 6).setValue(newName);
-      updated++;
+  var updated = withShotsWriteLock_(function () {
+    var sh = getSheet_(SHEET_SHOTS);
+    var rows = sh.getDataRange().getValues();
+    var n = 0;
+    var col = [];
+    for (var i = 1; i < rows.length; i++) {
+      if (String(rows[i][4]) === userId) { rows[i][5] = newName; n++; }
+      col.push([rows[i][5]]);
     }
-  }
-  if (updated > 0) invalidateShotsCache_();
+    if (n > 0) {
+      sh.getRange(2, 6, col.length, 1).setValues(col);
+      putShotsCache_(normalizeShotRows_(rows));
+    }
+    return n;
+  });
   return { updated: updated, displayName: newName };
 }
 
@@ -1239,7 +1248,10 @@ function festExtraParticipants_() {
   var rows = getSheet_(SHEET_FEST_PARTICIPANTS).getDataRange().getValues();
   var out = [];
   for (var i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) === range.monday) out.push({ userId: String(rows[i][1]), name: String(rows[i][2]) });
+    // 週キー('2026-09-21'等)はappendRowで書くとスプレッドシートが日付型に自動変換することがある
+    // (Shotsシートのdate列と同じ現象)。String()のままだと "Mon Sep 21 2026 ..." になり一致しないため、
+    // 日付型でも文字列でも同じ書式で比べる
+    if (dateCell_(rows[i][0]) === range.monday) out.push({ userId: String(rows[i][1]), name: String(rows[i][2]) });
   }
   return out;
 }
@@ -1724,7 +1736,10 @@ function getTeamAggregate_(ym) {
 }
 
 function getShots_() {
-  var rows = getShotsRawRows_();
+  return shotsFromRows_(getShotsRawRows_());
+}
+// 正規化済みの行データ(getShotsRawRows_ / normalizeShotRows_ の戻り値)を記録オブジェクトの配列にする
+function shotsFromRows_(rows) {
   var out = [];
   for (var i = 1; i < rows.length; i++) {
     var r = rows[i];
@@ -1765,9 +1780,14 @@ function getShotsRawRows_() {
       }
     }
   }
-  var sh = getSheet_(SHEET_SHOTS);
-  var rows = sh.getDataRange().getValues();
-  var normalized = rows.map(function (r, idx) {
+  var normalized = normalizeShotRows_(getSheet_(SHEET_SHOTS).getDataRange().getValues());
+  putShotsCache_(normalized);
+  return normalized;
+}
+
+// シートから読んだ生の行を、キャッシュに入れられる形(Date型のセルを文字列化)にする。元の配列は変更しない
+function normalizeShotRows_(rows) {
+  return rows.map(function (r, idx) {
     if (idx === 0) return r; // ヘッダ行はそのまま
     var copy = r.slice();
     copy[1] = textCell_(r[1]);
@@ -1775,19 +1795,36 @@ function getShotsRawRows_() {
     copy[3] = dateCell_(r[3]);
     return copy;
   });
+}
+
+// 正規化済みの全行をキャッシュに入れる。入れられなかった(大きすぎる・失敗)ときは古いキャッシュを必ず消す
+// (書き込み直後に呼ぶので、失敗して古いキャッシュが残ると書き込み前のデータが読まれてしまうため)
+function putShotsCache_(normalized) {
   try {
+    var cache = CacheService.getScriptCache();
     var json = JSON.stringify(normalized);
     // 100KB制限はバイト数換算。日本語(1文字3バイト)混じりでも超えないよう1チャンク6万文字に抑える
     var CHUNK_CHARS = 60000;
     var count = Math.ceil(json.length / CHUNK_CHARS) || 1;
-    if (count <= SHOTS_CACHE_MAX_CHUNKS) {
-      var payload = {};
-      for (var c = 0; c < count; c++) payload[SHOTS_CACHE_KEY + '_' + c] = json.substr(c * CHUNK_CHARS, CHUNK_CHARS);
-      cache.putAll(payload, SHOTS_CACHE_TTL_SEC);
-      cache.put(SHOTS_CACHE_KEY, String(count), SHOTS_CACHE_TTL_SEC); // メタは最後に書く(揃った状態しか読ませない)
-    }
-  } catch (e) { /* キャッシュ保存に失敗しても読み込みは継続 */ }
-  return normalized;
+    if (count > SHOTS_CACHE_MAX_CHUNKS) { invalidateShotsCache_(); return false; }
+    var payload = {};
+    for (var c = 0; c < count; c++) payload[SHOTS_CACHE_KEY + '_' + c] = json.substr(c * CHUNK_CHARS, CHUNK_CHARS);
+    cache.putAll(payload, SHOTS_CACHE_TTL_SEC);
+    cache.put(SHOTS_CACHE_KEY, String(count), SHOTS_CACHE_TTL_SEC); // メタは最後に書く(揃った状態しか読ませない)
+    return true;
+  } catch (e) {
+    try { invalidateShotsCache_(); } catch (e2) { /* 消せなくてもTTLで自然に切れる */ }
+    return false;
+  }
+}
+
+// Shotsシートへの書き込み(記録・編集・削除・表示名変更)はすべてこのロックの中で行う。
+// 編集・削除は「行番号」で書くので、同時に別の削除が走って行がずれると別人の記録を上書き・削除してしまうため
+function withShotsWriteLock_(fn) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(15000); }
+  catch (le) { throw new Error('サーバーが混み合っています。少し待ってからもう一度お試しください'); }
+  try { return fn(); } finally { lock.releaseLock(); }
 }
 
 // 記録の保存・更新・削除・表示名変更の直後に呼び、古いキャッシュを消して次回すぐ最新化されるようにする
