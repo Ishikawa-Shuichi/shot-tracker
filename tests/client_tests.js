@@ -31,7 +31,7 @@ function initData(isHost) {
 async function boot(opts) {
   opts = opts || {};
   const c = makeClient({ userId: ME, localStorage: opts.localStorage });
-  c.handlers.init = () => initData(opts.isHost);
+  c.handlers.init = () => { const d = initData(opts.isHost); return opts.patchInit ? opts.patchInit(d) : d; };
   c.handlers.getMyStats = (b) => {
     const who = b.targetUserId || ME;
     const period = b.granularity && b.granularity !== 'month' ? b.period : (b.ym || null);
@@ -316,6 +316,77 @@ const n = (c, action) => c.calls.filter((x) => x.action === action).length;
     await flush(100);
     assert.strictEqual(c.ctx.state.myStats.total.attempts, before - 5, '未送信記録の取り消しが二重に引かれた');
     assert.strictEqual(n(c, 'deleteShot'), 0, '未送信記録の削除がサーバーに送られた');
+  });
+
+  // ---- 初回案内(まだ1本も記録していない人に、最初の1記録をその場で終えてもらう) ----
+  const FT = { id: 's3', name: 'フリースロー', x: 50, y: 40, order: 5, scope: 'shared', ownerId: '', situations: [] };
+  const firstRun = (d) => { d.spots = SPOTS.concat([FT]); d.history = []; d.myStats = stats(YM, {}); d.streak = 0; return d; };
+  const lastChips = (c) => c.el('firstRunChips')._children.slice(-6);
+  const tapChip = (chip) => chip._listeners.click[0]({ preventDefault() {} });
+
+  await test('初回案内: 履歴0件の人には「フリースロー」で5本の案内が出て、入った数をタップすると記録シートが5本/3本で開く', async () => {
+    const c = await boot({ patchInit: firstRun });
+    assert.ok(!c.el('firstRunCard').classList.contains('hidden'), '初回案内が出ていない');
+    assert.ok(/フリースロー/.test(c.el('firstRunDesc').textContent), c.el('firstRunDesc').textContent);
+    const chips = lastChips(c);
+    assert.strictEqual(chips.length, 6);
+    assert.strictEqual(chips[3].textContent, '3本');
+    tapChip(chips[3]);
+    assert.ok(c.el('recSheetBg').classList.contains('open'), '記録シートが開いていない');
+    assert.ok(/フリースロー/.test(c.el('recSpotName').textContent), c.el('recSpotName').textContent);
+    assert.strictEqual(String(c.el('valAttempts').textContent), '5');
+    assert.strictEqual(String(c.el('valMakes').textContent), '3');
+  });
+
+  await test('初回案内: 「フリースロー」という名前のスポットが無ければ共通スポットの先頭を使う', async () => {
+    const c = await boot({ patchInit: (d) => { d.history = []; return d; } });
+    assert.ok(!c.el('firstRunCard').classList.contains('hidden'));
+    assert.ok(/左コーナー/.test(c.el('firstRunDesc').textContent), c.el('firstRunDesc').textContent);
+  });
+
+  await test('初回案内: 記録がある人・ホストには出ない', async () => {
+    const c1 = await boot();
+    assert.ok(c1.el('firstRunCard').classList.contains('hidden'), '記録がある人に出ている');
+    const c2 = await boot({ isHost: true, patchInit: (d) => { d.history = []; return d; } });
+    assert.ok(c2.el('firstRunCard').classList.contains('hidden'), 'ホストに出ている');
+  });
+
+  await test('初回案内: 1本目を保存した瞬間に案内が消え、はじめての記録として祝う(サーバー応答を待たない・応答後も戻らない)', async () => {
+    const c = await boot({ patchInit: firstRun });
+    c.handlers.recordShot = (b) => ({ id: b.clientId, myStats: stats(YM, { s3: [3, 5] }), history: [{ id: b.clientId, date: b.date, ym: YM, spotId: 's3', spot: 'フリースロー', makes: 3, attempts: 5, pct: 60, situation: '' }], streak: 1 });
+    tapChip(lastChips(c)[3]);
+    c.delays.push(500);
+    c.fire('recSave');
+    assert.ok(c.el('firstRunCard').classList.contains('hidden'), '保存直後に案内が消えていない');
+    assert.ok(/はじめての記録/.test(c.el('toast').textContent), c.el('toast').textContent);
+    await flush(700);
+    assert.ok(c.el('firstRunCard').classList.contains('hidden'), 'サーバー応答後に案内が戻った');
+    assert.strictEqual(n(c, 'recordShot'), 1);
+    assert.strictEqual(c.calls.find((x) => x.action === 'recordShot').body.attempts, 5);
+  });
+
+  // ---- フェスのカウントダウン(開催前も「次の山」が見える) ----
+  const nextFest = { name: 'シュートフェス', monday: '2026-10-19', sunday: '2026-10-25', daysUntil: 17, tiers: [1000, 2000, 3000] };
+  await test('フェス開催前: カードに「次のシュートフェス・あと17日・10/19(月)〜10/25(日)」が出て、メーターは隠れる。開催中の値が来たら戻る', async () => {
+    const c = await boot({ patchInit: (d) => { d.fest = { enabled: false, next: nextFest }; return d; } });
+    assert.ok(!c.el('festCard').classList.contains('hidden'), 'カードが隠れている');
+    assert.strictEqual(c.el('festTierBadge').textContent, 'あと17日');
+    assert.strictEqual(c.el('festSub').textContent, '10/19(月)〜10/25(日)');
+    assert.ok(c.el('festMeterWrap').classList.contains('hidden'), 'メーターが見えている');
+    assert.ok(/3000/.test(c.el('festNextBody').textContent));
+    c.run('applyFestStatus(' + JSON.stringify(fest()) + ')');
+    assert.ok(!c.el('festMeterWrap').classList.contains('hidden'), '開催中なのにメーターが隠れたまま');
+    assert.ok(c.el('festNextBody').classList.contains('hidden'));
+    assert.strictEqual(c.el('festTierBadge').textContent, '2/3段階');
+  });
+
+  await test('フェス終了後: 結果と一緒に「次回は◯/◯〜」が出る。前日は「明日から！」。nextも無ければカード自体を隠す', async () => {
+    const c = await boot({ patchInit: (d) => { d.fest = Object.assign(fest(), { isSunday: false, isOver: true, next: nextFest }); return d; } });
+    assert.ok(/次回は 10\/19\(月\)〜10\/25\(日\)/.test(c.el('festSub').textContent), c.el('festSub').textContent);
+    c.run('applyFestStatus({enabled:false, next:' + JSON.stringify(Object.assign({}, nextFest, { daysUntil: 1 })) + '})');
+    assert.strictEqual(c.el('festTierBadge').textContent, '明日から！');
+    c.run('applyFestStatus({enabled:false})');
+    assert.ok(c.el('festCard').classList.contains('hidden'));
   });
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

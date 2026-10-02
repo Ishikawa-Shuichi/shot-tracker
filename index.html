@@ -155,10 +155,19 @@
 <div class="wrap">
   <!-- ===== 記録タブ ===== -->
   <section id="tab-record">
-    <!-- チーム共同ゴール(期間限定イベント)。開催中のみ表示 -->
+    <!-- 初回案内: まだ1本も記録していない人にだけ出す(最初の1記録をその場で終えてもらうため)。記録が1件できたら消える -->
+    <div class="card hidden" id="firstRunCard" style="border-color:var(--accent)">
+      <div class="row"><b class="grow">🏀 はじめまして！まずは1回だけ記録してみよう</b></div>
+      <div class="muted" style="font-size:12px; margin-top:4px" id="firstRunDesc"></div>
+      <div class="muted" style="font-size:12px; margin-top:10px">入った数をタップ👇</div>
+      <div class="quick" id="firstRunChips"></div>
+      <div class="muted" style="font-size:11px; margin-top:8px">ほかの場所から始めてもOK(下のコートのスポットをタップ)</div>
+    </div>
+    <!-- チーム共同ゴール(期間限定イベント)。開催中は進み具合、開催前は次回までのカウントダウンを表示 -->
     <div class="card hidden" id="festCard" style="border-color:var(--accent)">
       <div class="row"><b class="grow" id="festTitle">🎉 シュートフェス</b><span class="pill" id="festTierBadge"></span></div>
       <div class="muted" style="font-size:12px; margin-top:2px" id="festSub"></div>
+      <div class="muted hidden" style="font-size:12px; margin-top:8px" id="festNextBody"></div>
       <div id="festMeterWrap" style="margin-top:18px; padding:0 6px;">
         <div id="festMeterTrack" style="position:relative; height:20px; border-radius:10px; background:var(--card2); border:1px solid var(--line);">
           <div style="position:absolute; inset:0; border-radius:9px; overflow:hidden;">
@@ -182,7 +191,7 @@
           <span style="text-align:right">🥇<span id="festTier3Label"></span></span>
         </div>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row" style="margin-top:10px" id="festTotalsRow">
         <span class="muted grow" style="font-size:12px" id="festTotalText"></span>
         <span class="muted" style="font-size:12px" id="festMineText"></span>
       </div>
@@ -597,6 +606,7 @@ var state = {
   trophyFamilies: [],        // ファミリー別の獲得数と「次の段階まであと◯」(サーバー計算。無ければ従来の平らな一覧で出す)
   myLevel: null,             // 表示レベル(サーバーが記録のたびに1日1段階ずつ本来のレベルへ追いつかせる)
   trophyTotal: 0,            // トロフィーの総数(未獲得分を「？？？」で見せる用)
+  firstRecordDone: false,    // このセッション中に初めての記録を保存した(初回案内をサーバー応答を待たずに消すため)
   historyItems: [],          // 直近取得した(未送信分を含まない)履歴。未送信分と合成して表示するために保持
   syncing: false              // 未送信キューを送信中かどうか(二重実行防止)
 };
@@ -1344,11 +1354,12 @@ function renderSituationChips(){
     row.classList.add('hidden');
   }
 }
-function openRecord(sp){
+// preset: 初回案内から開くときの初期値 { attempts, makes }(省略時は従来どおり 10本/5本)
+function openRecord(sp, preset){
   state.current = sp;
   state.editingShotId = null;
   state.saveToken = genId();
-  rec = { makes:5, attempts:10 };
+  rec = preset ? { makes: preset.makes, attempts: preset.attempts } : { makes:5, attempts:10 };
   document.getElementById('recSpotName').textContent = state.recordingAs
     ? '🏀 '+sp.name+'('+state.recordingAs.name+'さんの記録)'
     : '🏀 '+sp.name;
@@ -1530,9 +1541,12 @@ onTap(document.getElementById('recSave'), async function(){
     viewYm: state.ym,
     clientId: token
   };
+  var wasFirstRecord = isFirstRun() && target.userId === state.user.userId;
   closeRecord();
+  if(wasFirstRecord) state.firstRecordDone = true; // 初回案内はこの瞬間に消す(サーバー応答を待たない)
   applyOptimisticShot(payload);
-  toast('保存しました ✅');
+  if(wasFirstRecord) toast('🎉 はじめての記録！この調子で3日記録すると、最初のトロフィーが解放されます', 4500);
+  else toast('保存しました ✅');
   // この記録で解放条件を満たしたなら、サーバー応答を待たずにその場で演出を出す(見逃し防止)
   predictLiveUnlock(payload);
 
@@ -1691,8 +1705,26 @@ function applyFestStatus(fest){
 }
 function renderFestCard(fest){
   var card = document.getElementById('festCard');
-  if(!fest || !fest.enabled){ card.classList.add('hidden'); return; }
+  var meter = document.getElementById('festMeterWrap');
+  var totals = document.getElementById('festTotalsRow');
+  var nextBody = document.getElementById('festNextBody');
+  if(!fest || (!fest.enabled && !fest.next)){ card.classList.add('hidden'); return; }
   card.classList.remove('hidden');
+  if(!fest.enabled){
+    // 開催前: 次のフェスまでのカウントダウンだけを出す(メーター・貢献・倍チャンス・エクストラは隠す)。
+    // フェス週以外の3週間にも「次の山」が見えるようにするため(2026-09は「この週フェスだったのか」という声があった)
+    var nx = fest.next;
+    document.getElementById('festTitle').textContent = '📅 次の' + nx.name;
+    document.getElementById('festTierBadge').textContent = nx.daysUntil === 1 ? '明日から！' : 'あと' + nx.daysUntil + '日';
+    document.getElementById('festSub').textContent = fmtMdJa(nx.monday) + '〜' + fmtMdJa(nx.sunday);
+    nextBody.textContent = 'みんなの合計で 🥉' + nx.tiers[0] + ' 🥈' + nx.tiers[1] + ' 🥇' + nx.tiers[2] + '本 を目指す1週間。';
+    nextBody.classList.remove('hidden');
+    meter.classList.add('hidden'); totals.classList.add('hidden');
+    document.getElementById('festDoubleBanner').classList.add('hidden');
+    document.getElementById('festExtraCard').classList.add('hidden');
+    return;
+  }
+  meter.classList.remove('hidden'); totals.classList.remove('hidden'); nextBody.classList.add('hidden');
   document.getElementById('festTitle').textContent = '🎉 ' + fest.name;
   document.getElementById('festTierBadge').textContent = fest.tierReached + '/' + fest.tiers.length + '段階';
   document.getElementById('festTier1Label').textContent = fest.tiers[0];
@@ -1707,7 +1739,9 @@ function renderFestCard(fest){
   document.getElementById('festBurst').classList.toggle('hidden', fest.tierReached < fest.tiers.length);
   document.getElementById('festTotalText').textContent = '合計 ' + fest.displayTotal + '本';
   document.getElementById('festMineText').textContent = 'あなたの貢献: ' + fest.myContribution + '本';
-  document.getElementById('festSub').textContent = fest.isSunday ? '本日は最終日です' : (fest.range.monday + '〜' + fest.range.sunday);
+  var subText = fest.isSunday ? '本日は最終日です' : (fest.range.monday + '〜' + fest.range.sunday);
+  if(fest.isOver && fest.next) subText = '終了(' + fest.range.monday + '〜' + fest.range.sunday + ')・次回は ' + fmtMdJa(fest.next.monday) + '〜' + fmtMdJa(fest.next.sunday);
+  document.getElementById('festSub').textContent = subText;
 
   var doubleBanner = document.getElementById('festDoubleBanner');
   var extraCard = document.getElementById('festExtraCard');
@@ -2302,6 +2336,41 @@ function applyHistory(items, targetId){
   writeTabCache(histKey(targetId || state.user.userId), items);
   renderHistoryList();
 }
+// ---- 初回案内(まだ1本も記録していない人に、最初の1記録をその場で終えてもらう) ----
+// 登録はしたのに1本も記録していない人が19人中6人いた(2026-10-02)。コートの8つのスポットから選ばせるのではなく、
+// 「フリースローを5本打って、入った数をタップ」の一本道にして、既存の記録シート(5本/◯本で開く)に流す。
+function isFirstRun(){
+  if(state.firstRecordDone || state.isHost || state.recordingAs || state.historyLoading) return false;
+  if(!Array.isArray(state.historyItems) || state.historyItems.length) return false;
+  return !state.pendingShots.some(function(p){ return p.userId === state.user.userId; });
+}
+// 案内に使うスポット: 「フリースロー」という名前の共通スポット。無ければ共通スポットの先頭(他チームでこのコードを使う場合)
+function firstRunSpot(){
+  var shared = state.spots.filter(function(s){ return s.scope !== 'personal'; })
+    .sort(function(a,b){ return (a.order||0) - (b.order||0); });
+  return shared.filter(function(s){ return s.name === 'フリースロー'; })[0] || shared[0] || null;
+}
+function renderFirstRunCard(){
+  var card = document.getElementById('firstRunCard');
+  var sp = isFirstRun() ? firstRunSpot() : null;
+  if(!sp){ card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  document.getElementById('firstRunDesc').textContent = '「' + sp.name + '」から5本打ってみよう。';
+  var chips = document.getElementById('firstRunChips'); chips.innerHTML = '';
+  for(var i=0; i<=5; i++){
+    (function(n){
+      var b = document.createElement('button'); b.textContent = n + '本';
+      onTap(b, function(){ openRecord(sp, { attempts: 5, makes: n }); });
+      chips.appendChild(b);
+    })(i);
+  }
+}
+// '2026-10-19' → '10/19(月)'
+function fmtMdJa(dateStr){
+  var p = dateStr.split('-');
+  var d = new Date(Number(p[0]), Number(p[1])-1, Number(p[2]));
+  return Number(p[1]) + '/' + Number(p[2]) + '(' + ['日','月','火','水','木','金','土'][d.getDay()] + ')';
+}
 function renderHistoryList(){
   // 未送信の記録は、いま表示している人(自分、または代理記録の対象者)の分だけ上に重ねて見せる
   var viewUserId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
@@ -2324,6 +2393,7 @@ function renderHistoryList(){
     onTap(el, function(){ openEditShot(it); });
     host.appendChild(el);
   });
+  renderFirstRunCard(); // 履歴が空(=まだ1本も記録していない)なら初回案内を出し、1件できたら消す
 }
 // 表示中の人(自分、または代理記録の相手)の最近の記録。前に見た人なら控えで即表示→裏で最新化。
 // 控えの履歴はライブ解放の即時判定(predictLiveUnlock)には使わない(古い履歴で判定すると誤って演出が出るため)

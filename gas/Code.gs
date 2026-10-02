@@ -11,6 +11,10 @@
 // 任意: 簡易トークン。空文字なら認証なし。フロントの API_TOKEN と一致させる。
 var API_TOKEN = '';
 
+// 本番に「どの版が貼られているか」を確認するための印。貼り付けのたびに日付を更新する。
+// init の返り値(codeVersion)と、ブラウザで /exec を開いたとき(doGet)の version に出る。
+var CODE_VERSION = '2026-10-02a';
+
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
 
@@ -108,8 +112,8 @@ var DEFAULT_SPOTS = [
 
 // ===== エントリポイント =========================================
 function doGet(e) {
-  // 動作確認用
-  return json_({ ok: true, data: { status: 'alive', time: new Date().toISOString() } });
+  // 動作確認用(ブラウザで /exec を開くと見える。version で「どの版が貼られているか」が分かる)
+  return json_({ ok: true, data: { status: 'alive', time: new Date().toISOString(), version: CODE_VERSION } });
 }
 
 function doPost(e) {
@@ -188,7 +192,8 @@ function actionInit_(body) {
     myLevel: getShownLevel_(userId, totalCareerAttempts_(shots, userId)), // ヘッダーの Lv.◯ ピル用(表示レベル)
     // 仲間のライセンス閲覧(誰でも誰の分でも見られる)用の選択肢として、ホスト以外にも渡す
     members: allMembers_(shots),
-    fest: getFestStatus_(userId, shots)
+    fest: getFestStatus_(userId, shots),
+    codeVersion: CODE_VERSION // 本番に貼られている版の確認用
   };
   return result;
 }
@@ -1190,13 +1195,35 @@ function actionGetAllLicenses_(body) {
 // その月の「月末に収まる直近の月〜日」を自動計算する(手動で日付を書き換える必要をなくすため)。
 // 月末日から直前の日曜まで遡り、そこから6日前を月曜とする。月をまたがないので、
 // 月の途中でこの関数を呼んでも常にその月の最終週が返る。
-function festDateRange_() {
-  var todayStr = dateOf_(new Date());
-  var y = Number(todayStr.slice(0, 4)), m = Number(todayStr.slice(5, 7));
-  var lastDay = new Date(y, m, 0); // 翌月の0日目=今月の最終日(ローカル日付)
+// y年m月(1〜12)のフェス週 = その月の最終日曜で終わる月〜日
+function festDateRangeFor_(y, m) {
+  var lastDay = new Date(y, m, 0); // 翌月の0日目=その月の最終日(ローカル日付)
   var sunday = new Date(lastDay); sunday.setDate(sunday.getDate() - lastDay.getDay());
   var monday = new Date(sunday); monday.setDate(monday.getDate() - 6);
   return { monday: dateOf_(monday), sunday: dateOf_(sunday) };
+}
+function festDateRange_() {
+  var todayStr = dateOf_(new Date());
+  return festDateRangeFor_(Number(todayStr.slice(0, 4)), Number(todayStr.slice(5, 7)));
+}
+// 次に来るフェス週(今日がフェス週より前なら今月の、過ぎていれば来月の)と、その月曜まであと何日か。
+// フェス週以外の期間にも「次の山」が見えるようにする(2026-09: 告知が無く「この週フェスだったのか」という声があった)。
+function nextFestInfo_(todayStr) {
+  var y = Number(todayStr.slice(0, 4)), m = Number(todayStr.slice(5, 7));
+  var range = festDateRangeFor_(y, m);
+  if (todayStr > range.sunday) range = (m === 12) ? festDateRangeFor_(y + 1, 1) : festDateRangeFor_(y, m + 1);
+  return { name: FEST_NAME, monday: range.monday, sunday: range.sunday, daysUntil: daysBetween_(todayStr, range.monday), tiers: FEST_TIERS };
+}
+// 'YYYY-MM-DD' 同士の日数差(to - from)。時刻・タイムゾーンの影響を受けないようUTCの暦日で数える
+function daysBetween_(fromStr, toStr) {
+  var f = fromStr.split('-'), t = toStr.split('-');
+  return Math.round((Date.UTC(Number(t[0]), Number(t[1]) - 1, Number(t[2])) - Date.UTC(Number(f[0]), Number(f[1]) - 1, Number(f[2]))) / 86400000);
+}
+// LINE文面用の短い日付 '10/19(月)'
+function fmtMd_(dateStr) {
+  var p = dateStr.split('-');
+  var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  return Number(p[1]) + '/' + Number(p[2]) + '(' + ['日', '月', '火', '水', '木', '金', '土'][d.getDay()] + ')';
 }
 
 // 対象週の合計本数。個人の週目標と同じ方針で、スポット・シチュエーションを問わず全記録を数える
@@ -1264,7 +1291,8 @@ function getFestStatus_(userId, shots) {
   // 今月のフェス週(月末に収まる直近の月〜日)がまだ来ていない間はカード自体を出さない。
   // 週が終わった後は、月が変わってfestDateRange_の計算結果が来月分に切り替わるまで
   // (=todayStrがそちらのmondayより前になるまで)、この条件を満たし続けるので結果が表示され続ける
-  if (todayStr < range.monday) return { enabled: false };
+  // 開催前はカードの本体は出さないが、次のフェスまでのカウントダウン(next)だけは返す
+  if (todayStr < range.monday) return { enabled: false, next: nextFestInfo_(todayStr) };
   var t = festTotals_(shots || getShots_());
   var tierReached = festTierReached_(t.displayTotal);
   var tier3Value = FEST_TIERS[FEST_TIERS.length - 1];
@@ -1295,7 +1323,8 @@ function getFestStatus_(userId, shots) {
     tiers: FEST_TIERS, tierReached: tierReached,
     rawTotal: t.rawTotal, displayTotal: t.displayTotal, multiplierApplied: t.multiplierApplied,
     myContribution: userId ? (t.byUser[userId] || 0) : 0,
-    mode: mode, extra: extra
+    mode: mode, extra: extra,
+    next: isOver ? nextFestInfo_(todayStr) : null // 終了後の結果表示の間も「次回は◯/◯〜」が見えるように
   };
 }
 
@@ -2066,14 +2095,18 @@ function setupMonthlyTrigger() {
   Logger.log('毎日21:50頃にチェックし、月末だけ月間ランキングを自動送信するトリガーを設定しました');
 }
 
-/** 手動実行用: フェス開始の告知を送る。準備ができたタイミングで1回だけ実行する */
-function sendFestKickoff() {
+/** フェス開始の告知を送る。
+ * 自動: weeklyMvpPost がフェス前日(日曜)の投稿のあとに { eve: true } で呼ぶ(「明日から」の文面)。
+ * 手動: 開催中に告知し忘れた時などは引数なしで1回実行する(「開催中」の文面)。 */
+function sendFestKickoff(opts) {
+  var eve = !!(opts && opts.eve);
   var shots = getShots_();
   var memberMap = {};
   getKnownUsers_().forEach(function (m) { memberMap[m.userId] = m.name; });
   uniqueMembers_(shots).forEach(function (m) { memberMap[m.userId] = m.name; });
   var range = festDateRange_();
-  var text = appMsg_('🎉 ' + FEST_NAME + ' 開催中！(' + range.monday + '〜' + range.sunday + ')\n\n'
+  var when = fmtMd_(range.monday) + '〜' + fmtMd_(range.sunday);
+  var text = appMsg_((eve ? '🎉 明日から' + FEST_NAME + '！(' + when + ')' : '🎉 ' + FEST_NAME + ' 開催中！(' + when + ')') + '\n\n'
     + 'チームみんなのシュート本数を合計して、目標達成を目指します🏀\n'
     + '🥉1段階目 ' + FEST_TIERS[0] + '本\n'
     + '🥈2段階目 ' + FEST_TIERS[1] + '本\n'
@@ -2232,6 +2265,19 @@ function weeklyMvpPost() {
   }
   var festBlock = festFinalMessageBlock_(shots);
   if (festBlock) rankingLines.push(festBlock);
+  // フェス週でない日曜は、次のフェスがいつかを1行添える(通数は増えない)。
+  // 前日(明日から)の日曜だけは、この行の代わりに下で告知を1通別送する(トーク一覧のプレビュー=1行目に「明日からフェス」を出すため)。
+  var todayStrW = dateOf_(new Date());
+  var nextFest = null;
+  if (FEST_ENABLED) {
+    var festNow = festDateRange_();
+    var inFestWeek = todayStrW >= festNow.monday && todayStrW <= festNow.sunday;
+    if (!inFestWeek) nextFest = nextFestInfo_(todayStrW);
+  }
+  if (nextFest && nextFest.daysUntil !== 1) {
+    rankingLines.push('');
+    rankingLines.push('📅 次の' + FEST_NAME + ': ' + fmtMd_(nextFest.monday) + '〜' + fmtMd_(nextFest.sunday) + '(あと' + nextFest.daysUntil + '日)');
+  }
   var rankingText = rankingLines.join('\n');
   var attemptsByUser = {};
   ranked.forEach(function (u) { attemptsByUser[u.userId] = u.attempts; });
@@ -2254,6 +2300,9 @@ function weeklyMvpPost() {
     if (!pushLineMessageTo_(m.userId, text)) failed.push(m.name);
   });
   if (failed.length) Logger.log('送信できなかった人(未フォロー等): ' + failed.join(', '));
+  // フェス前日(日曜)は、ランキングとは別に「明日からフェス」を1通送る。
+  // 以前は手動実行(sendFestKickoff)に頼っていて2026-09は送り忘れ、「この週フェスだったのか」という声が出た。
+  if (nextFest && nextFest.daysUntil === 1) sendFestKickoff({ eve: true });
 }
 
 function pushLineMessageTo_(to, text) {

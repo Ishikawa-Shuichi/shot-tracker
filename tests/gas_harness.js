@@ -22,7 +22,10 @@ function autoConvert(v) {
 }
 const cloneCell = (v) => (v instanceof Date ? new Date(v.getTime()) : v);
 
-function makeEnv() {
+// opts.now: '2026-10-18T21:45:00+09:00' のように渡すと、Code.gs内の「引数なしの new Date()」がその時刻を返す
+// (日付に依存する処理=フェス週・週次投稿などを、任意の日のつもりで検証するため)。引数ありの new Date(y,m,d) は本物のまま。
+function makeEnv(opts) {
+  opts = opts || {};
   const counters = { getValues: 0, setValue: 0, setValues: 0, appendRow: 0, deleteRow: 0 };
   const sheets = {};
   function makeSheet(name) {
@@ -81,8 +84,17 @@ function makeEnv() {
       },
     },
     ContentService: { createTextOutput: (s) => ({ setMimeType() { return s; } }), MimeType: { JSON: 'json' } },
+    Logger: { log() {} },
     UrlFetchApp: { fetch() { throw new Error('テストでは外部通信しない'); } },
   };
+  if (opts.now) {
+    const fixed = new Date(opts.now).getTime();
+    class FakeDate extends Date {
+      constructor(...a) { if (a.length === 0) super(fixed); else super(...a); }
+      static now() { return fixed; }
+    }
+    ctx.Date = FakeDate;
+  }
   vm.createContext(ctx);
   const code = fs.readFileSync(process.argv[2], 'utf8');
   vm.runInContext(code, ctx, { filename: 'Code.gs' });

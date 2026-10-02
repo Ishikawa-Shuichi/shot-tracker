@@ -8,8 +8,8 @@ function test(name, fn) {
 }
 const A = 'Uaaaa', B = 'Ubbbb', HOST = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
 
-function setup() {
-  const env = makeEnv();
+function setup(opts) {
+  const env = makeEnv(opts);
   const { ctx } = env;
   const spots = ctx.getSheet_(ctx.SHEET_SPOTS); // ヘッダ+既定スポットが自動で入る
   // 既定スポットは消して、テスト用を入れ直す
@@ -204,6 +204,69 @@ test('recordShot(既存・未変更)が新しいロック関数と衝突しな�
   assert.ok(res.id === 'c-new');
   ctx.actionUpdateShot_({ shotId: 'c-new', actingUserId: A, makes: 4, attempts: 4 });
   assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'c-new').makes, 4);
+});
+
+// ---- フェスのカウントダウン・前日告知(「今日」を固定して検証) ----
+function setupAt(now) { return setup({ now }); }
+
+test('フェス開催前: getFestStatus_ は enabled:false と next(今月のフェス週・あと何日)を返す。initは版番号を返す', () => {
+  const { ctx } = setupAt('2026-10-02T10:00:00+09:00');
+  const s = ctx.getFestStatus_(A, ctx.getShots_());
+  assert.strictEqual(s.enabled, false);
+  assert.deepStrictEqual([s.next.monday, s.next.sunday, s.next.daysUntil], ['2026-10-19', '2026-10-25', 17]);
+  assert.strictEqual(ctx.actionInit_({ userId: A }).codeVersion, ctx.CODE_VERSION);
+  assert.ok(/^\d{4}-\d{2}-\d{2}[a-z]$/.test(ctx.CODE_VERSION), 'CODE_VERSIONは YYYY-MM-DD+英字 の形');
+});
+
+test('フェス終了後: 結果(enabled:true, isOver)と一緒に来月のnextを返す。12月→1月の年またぎも正しい', () => {
+  const { ctx } = setupAt('2026-09-28T10:00:00+09:00');
+  const s = ctx.getFestStatus_(A, ctx.getShots_());
+  assert.strictEqual(s.enabled, true); assert.strictEqual(s.isOver, true);
+  assert.deepStrictEqual([s.next.monday, s.next.daysUntil], ['2026-10-19', 21]);
+  const { ctx: c2 } = setupAt('2026-12-30T10:00:00+09:00');
+  // 模擬GAS(vm)側の配列と比較するのでJSON化して中身だけ比べる
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(c2.nextFestInfo_('2026-12-30'))), { name: 'シュートフェス', monday: '2027-01-25', sunday: '2027-01-31', daysUntil: 26, tiers: [1000, 2000, 3000] });
+});
+
+// LINE送信を捕まえる(トークンあり・HTTP 200の体で、送った本文を集める)
+function capturePushes(ctx) {
+  const pushes = [];
+  const ok = () => ({ getResponseCode: () => 200, getContentText: () => '' });
+  ctx.PropertiesService = { getScriptProperties: () => ({ getProperty: (k) => (k === 'LINE_TOKEN' ? 'test-token' : null), setProperty() {} }) };
+  ctx.UrlFetchApp = {
+    fetch: (url, o) => { pushes.push(JSON.parse(o.payload)); return ok(); },
+    fetchAll: (reqs) => reqs.map((r) => { pushes.push(JSON.parse(r.payload)); return ok(); }),
+  };
+  return pushes;
+}
+test('週次投稿: フェス前日の日曜はランキングとは別に「明日からシュートフェス」を1通送る(1行目=トーク一覧のプレビューに出る)', () => {
+  const { ctx } = setupAt('2026-10-18T21:45:00+09:00');
+  const pushes = capturePushes(ctx);
+  ctx.weeklyMvpPost();
+  const texts = pushes.map((p) => p.messages[0].text);
+  const kick = texts.filter((t) => /明日からシュートフェス/.test(t));
+  const rank = texts.filter((t) => /今週のシュート本数ランキング/.test(t));
+  assert.strictEqual(rank.length, 2, 'ランキングは記録のある2人(A,B)に届く(ホストは配信除外)');
+  assert.strictEqual(kick.length, 2, '告知が2人に届いていない: ' + texts.join(' | '));
+  assert.ok(kick[0].startsWith('【シュートログ】🎉 明日からシュートフェス！(10/19(月)〜10/25(日))'), kick[0]);
+  assert.ok(rank.every((t) => !/次のシュートフェス/.test(t)), '前日はランキング側に「次の」行を重ねない');
+});
+test('週次投稿: 普通の日曜はランキングに「次のシュートフェス: ◯/◯〜(あと◯日)」を1行添え、告知は送らない', () => {
+  const { ctx } = setupAt('2026-10-04T21:45:00+09:00');
+  const pushes = capturePushes(ctx);
+  ctx.weeklyMvpPost();
+  const texts = pushes.map((p) => p.messages[0].text);
+  assert.strictEqual(texts.length, 2, '通数が2ではない: ' + texts.length);
+  assert.ok(texts.every((t) => /📅 次のシュートフェス: 10\/19\(月\)〜10\/25\(日\)\(あと15日\)/.test(t)), texts[0]);
+});
+test('週次投稿: フェス週の日曜は「次の」行を付けず、最終結果を付ける', () => {
+  const { ctx } = setupAt('2026-10-25T21:45:00+09:00');
+  const pushes = capturePushes(ctx);
+  ctx.weeklyMvpPost();
+  const texts = pushes.map((p) => p.messages[0].text);
+  assert.ok(texts.length >= 1);
+  assert.ok(texts.every((t) => !/次のシュートフェス/.test(t)), texts[0]);
+  assert.ok(texts.every((t) => /最終結果/.test(t)), texts[0]);
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
