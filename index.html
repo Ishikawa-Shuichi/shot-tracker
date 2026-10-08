@@ -658,11 +658,18 @@ function onTap(el, handler){
 // スポット追加だけは再試行すると二重登録の恐れがあるため自動再試行しない
 // (シュート記録の保存は clientId による重複防止済みなので再試行して安全)。
 var NO_RETRY_ACTIONS = { addSpot: 1 };
+// GASは返事を届けるまでに20〜35秒かかることがある(2026-10-08実測: 処理自体は数秒で終わっていて、返事の受け渡しが遅い)。
+// 待ち時間をそれより短くすると、届きかけの正常な返事を捨てて最初からやり直すことになるため長めにする
+var API_TIMEOUT_MS = 45000;
+// Google側の一時的な不調で、本来の返事の代わりに「ブラウザで開いた時の返事(doGet)」やエラーページ(HTML)が返ることがある
+// (2026-10-08実測: ブラウザから8回中2回)。これを成功扱いすると、記録が保存されていないのに「送信済み」として消えてしまうため、
+// 通信エラーと同じ扱いにして再試行・未送信キューに回す(記録の保存はclientIdで重複しないので、やり直しても安全)
+function transientServerError(msg){ var e = new Error(msg); e.isNetworkError = true; return e; }
+function isDoGetShaped(data){ return !!data && typeof data === 'object' && data.status === 'alive' && 'time' in data; }
 async function api(action, payload, opts){
   opts = opts || {};
   var maxRetries = opts.retries != null ? opts.retries : (NO_RETRY_ACTIONS[action] ? 0 : 2);
-  // GASは久しぶりのアクセス時に起動へ10秒前後かかることがあるため、短すぎると無駄な再試行になる
-  var timeoutMs = opts.timeoutMs || 15000;
+  var timeoutMs = opts.timeoutMs || API_TIMEOUT_MS;
   var lastErr;
   for(var attempt=0; attempt<=maxRetries; attempt++){
     var controller = ('AbortController' in window) ? new AbortController() : null;
@@ -684,7 +691,15 @@ async function api(action, payload, opts){
       throw lastErr;
     }
     if(timer) clearTimeout(timer);
-    var j = await res.json();
+    var j;
+    try{ j = await res.json(); }
+    catch(parseErr){ j = null; }
+    if(!j || typeof j !== 'object' || (j.ok && isDoGetShaped(j.data))){
+      // JSONでない返事(Googleのエラーページ等)か、doGetの返事が混ざってきた。サーバー側の一時的な不調として再試行する
+      lastErr = transientServerError('サーバーが混み合っています(' + (res && res.status) + ')');
+      if(attempt < maxRetries) continue;
+      throw lastErr;
+    }
     if(!j.ok){
       // サーバーには届いたが明確に拒否された(入力エラーなど)。再試行しても無駄なのですぐ投げる。
       var appErr = new Error(j.error||'エラー');
@@ -841,7 +856,7 @@ async function trySyncPending(){
     for(var i=0; i<queue.length; i++){
       var item = queue[i];
       try{
-        await api('recordShot', item, { retries:0, timeoutMs:10000 });
+        await api('recordShot', item, { retries:0 }); // 待ち時間は既定(長め)。短いと保存できているのに確認を受け取れず、未送信のまま残り続ける
         removePending(item.clientId);
         syncedAny = true;
       }catch(e){
@@ -855,7 +870,7 @@ async function trySyncPending(){
       for(var k=0; k<ops.length; k++){
         var op = ops[k];
         try{
-          await api(op.action, op.payload, { retries:0, timeoutMs:10000 });
+          await api(op.action, op.payload, { retries:0 });
           removePendingOp(op.opId);
           syncedAny = true;
         }catch(e2){
@@ -2329,7 +2344,18 @@ function refreshMyTab(){
 // ================= 履歴 =================
 // 最近の記録(サーバー確定分)。targetIdはその履歴の持ち主(省略時は自分)
 function histKey(targetId){ return 'hist_' + state.user.userId + '_' + targetId; }
+// サーバーの履歴に既に入っている未送信記録は、実は保存できていた(確認の返事だけが届かなかった)ので、キューから外す。
+// 外さないと、同じ記録が「未送信」と「保存済み」の2行で見え、起動時に確率へ二重に足される
+function reconcilePendingWithServer(items){
+  if(!Array.isArray(items) || !state.pendingShots.length) return;
+  var ids = {}; items.forEach(function(h){ if(h && h.id) ids[h.id] = true; });
+  var before = state.pendingShots.length;
+  state.pendingShots = state.pendingShots.filter(function(p){ return !ids[p.clientId]; });
+  if(state.pendingShots.length !== before){ savePendingToStorage(); updatePendingBadge(); }
+}
 function applyHistory(items, targetId){
+  if(!Array.isArray(items)) items = []; // 想定外の返事でも画面全体を止めない
+  reconcilePendingWithServer(items);
   state.historyItems = items; // 未送信分と合成するため、サーバー確定分を保持しておく
   state.historyFresh = true;  // サーバーから届いた最新の履歴(端末の控えではない)
   state.historyLoading = false;

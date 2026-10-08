@@ -389,6 +389,67 @@ const n = (c, action) => c.calls.filter((x) => x.action === action).length;
     assert.ok(c.el('festCard').classList.contains('hidden'));
   });
 
+  // ---- Google側の一時的な不調(doGetの返事が混ざる・エラーページ)で記録を失わない ----
+  const DOGET = () => ({ status: 'alive', time: '2026-10-08T07:07:30.817Z', version: '2026-10-02a' });
+  const okRecord = (b) => ({ id: b.clientId, myStats: stats(YM, { s1: [4, 10], s2: [9, 15] }), history: [{ id: b.clientId, date: b.date, ym: YM, spotId: 's2', spot: 'トップ', makes: 3, attempts: 5, pct: 60, situation: '' }].concat(HIST), streak: 3 });
+  function saveOne(c) { c.run("openRecord(state.spots[1], {attempts:5, makes:3})"); return c.fire('recSave'); }
+
+  await test('不調1: 保存の返事にdoGetの返事が混ざっても、同じclientIdでやり直して保存され、エラー表示もキュー残りも無い', async () => {
+    const c = await boot();
+    let k = 0;
+    c.handlers.recordShot = (b) => (k++ === 0 ? DOGET() : okRecord(b));
+    saveOne(c);
+    await flush(150);
+    const sent = c.calls.filter((x) => x.action === 'recordShot');
+    assert.strictEqual(sent.length, 2, '再試行していない: ' + sent.length);
+    assert.strictEqual(sent[0].body.clientId, sent[1].body.clientId, 'やり直しで別の記録として送っている');
+    assert.ok(!/保存できませんでした/.test(c.el('toast').textContent), c.el('toast').textContent);
+    assert.strictEqual(c.ctx.state.pendingShots.length, 0);
+    assert.strictEqual(c.ctx.state.historyItems[0].id, sent[0].body.clientId);
+  });
+
+  await test('不調2: 何度やってもdoGetの返事なら、記録は消さずに未送信キューへ回す', async () => {
+    const c = await boot();
+    c.handlers.recordShot = () => DOGET();
+    saveOne(c);
+    await flush(150);
+    assert.strictEqual(c.ctx.state.pendingShots.length, 1, '記録が消えた');
+    assert.ok(/未送信/.test(c.el('toast').textContent), c.el('toast').textContent);
+  });
+
+  await test('不調3: エラーページ(JSONでない返事)も通信エラー扱いで再試行され、保存される', async () => {
+    const c = await boot();
+    let k = 0;
+    c.handlers.recordShot = (b) => { if (k++ === 0) throw { html: 404 }; return okRecord(b); };
+    saveOne(c);
+    await flush(150);
+    assert.strictEqual(n(c, 'recordShot'), 2);
+    assert.strictEqual(c.ctx.state.pendingShots.length, 0);
+    assert.ok(!/保存できませんでした/.test(c.el('toast').textContent), c.el('toast').textContent);
+  });
+
+  await test('不調4: 未送信キューの自動送信でdoGetの返事が来ても、キューから消さない(以前は「送信しました」と出して消えていた)', async () => {
+    const c = await boot();
+    c.handlers.recordShot = () => DOGET();
+    c.run("state.pendingShots.push({clientId:'pq1', actingUserId:'Uself', userId:'Uself', displayName:'自分', spotId:'s1', spotName:'左コーナー', makes:2, attempts:5, date:'2026-09-25', ym:'2026-09', situation:''})");
+    c.reset();
+    await c.run('trySyncPending()');
+    assert.strictEqual(n(c, 'recordShot'), 1);
+    assert.strictEqual(c.ctx.state.pendingShots.length, 1, '未送信の記録が消えた');
+    assert.ok(!/送信しました/.test(c.el('toast').textContent), c.el('toast').textContent);
+  });
+
+  await test('照合: 未送信キューの記録がサーバーの履歴に既にあれば(確認の返事だけ届かなかった)、キューから外し、確率に二重に足さない', async () => {
+    const pend = { clientId: 'c-dup', actingUserId: ME, userId: ME, displayName: '自分', spotId: 's1', spotName: '左コーナー', makes: 2, attempts: 5, date: '2026-09-25', ym: YM, situation: '' };
+    const c = await boot({
+      localStorage: { pendingShots_v1: JSON.stringify([pend]) },
+      patchInit: (d) => { d.history = [{ id: 'c-dup', date: '2026-09-25', ym: YM, spotId: 's1', spot: '左コーナー', makes: 2, attempts: 5, pct: 40, situation: '' }].concat(d.history); return d; },
+    });
+    assert.strictEqual(c.ctx.state.pendingShots.length, 0, 'キューに残っている');
+    assert.strictEqual(c.ctx.state.myStats.total.attempts, 20, '二重に足された: ' + c.ctx.state.myStats.total.attempts);
+    assert.strictEqual(n(c, 'recordShot'), 0, '保存済みの記録をもう一度送った');
+  });
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })();

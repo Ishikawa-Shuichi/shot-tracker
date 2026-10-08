@@ -64,6 +64,8 @@ function makeClient(opts) {
       return { json: async () => ({ ok: true, data }) };
     } catch (e) {
       if (e && e.network) { const err = new TypeError('Failed to fetch'); throw err; }
+      // GoogleのエラーページのようにJSONでない返事(throw {html:404} で再現)
+      if (e && e.html) return { status: e.html, json: async () => { throw new SyntaxError('Unexpected token < in JSON'); } };
       return { json: async () => ({ ok: false, error: (e && e.app) || String(e) }) };
     }
   }
