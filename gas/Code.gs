@@ -13,7 +13,7 @@ var API_TOKEN = '';
 
 // 本番に「どの版が貼られているか」を確認するための印。貼り付けのたびに日付を更新する。
 // init の返り値(codeVersion)と、ブラウザで /exec を開いたとき(doGet)の version に出る。
-var CODE_VERSION = '2026-10-02a';
+var CODE_VERSION = '2026-10-08a';
 
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
@@ -40,6 +40,7 @@ var SHEET_SHOTS = 'Shots';
 var SHEET_GOALS = 'Goals';
 var SHEET_FEST_PARTICIPANTS = 'FestParticipants';
 var SHEET_LEVELS = 'Levels'; // 表示レベル(1日1段階ずつ本来のレベルに追いつかせる用)
+var SHEET_USAGE = 'Usage';   // 利用状況(アプリを開いた事実・開いている間の通信の秒数と成否)。打ち手が効いたかを週ごとに判定するため
 
 // ===== チーム共同ゴール(シュートフェス) ============================
 // 期間限定(1週間)のチーム協力イベント。上限は設けない(頑張るほど得をする設計を貫く)。
@@ -151,6 +152,7 @@ function doPost(e) {
       case 'getFestStatus': data = actionGetFestStatus_(body); break;
       case 'festParticipate': data = actionFestParticipate_(body); break;
       case 'getLineQuota': data = actionGetLineQuota_(body); break;
+      case 'getUsage':    data = actionGetUsage_(body); break;
       default:
         return json_({ ok: false, error: 'unknown action: ' + action });
     }
@@ -195,7 +197,115 @@ function actionInit_(body) {
     fest: getFestStatus_(userId, shots),
     codeVersion: CODE_VERSION // 本番に貼られている版の確認用
   };
+  // 端末に貯まっていた利用状況を受け取る。記録に失敗しても起動データは必ず返す(届いた件数だけ端末から消してもらう)
+  try { result.usageAccepted = recordUsage_(userId, body.usage); } catch (e) { result.usageAccepted = 0; }
   return result;
+}
+
+// ===== 利用状況(開いた事実・待ち時間)=================================
+// 端末から届いた利用状況を Usage シートに1行ずつ足す。受け取った件数(=端末から消してよい件数)を返す。
+// 形のおかしい項目は捨てるが、件数には数える(端末に残り続けて毎回送られてこないように)
+var USAGE_MAX_ENTRIES = 40;
+function recordUsage_(userId, entries) {
+  if (!userId || !Array.isArray(entries) || !entries.length) return 0;
+  var taken = entries.slice(0, USAGE_MAX_ENTRIES);
+  var now = new Date().toISOString();
+  var str = function (v, n) { return String(v == null ? '' : v).slice(0, n); };
+  var num = function (v) { var x = Number(v); return isFinite(x) && x >= 0 ? Math.min(Math.round(x), 86400000) : ''; };
+  var rows = [];
+  taken.forEach(function (e) {
+    if (!e || typeof e !== 'object' || (e.k !== 'open' && e.k !== 'sum')) return;
+    var calls = '';
+    if (e.k === 'sum' && e.calls && typeof e.calls === 'object') calls = str(JSON.stringify(e.calls), 3000);
+    rows.push([now, e.k, userId, str(e.sid, 40), str(e.at, 30), e.cache ? 'TRUE' : 'FALSE', num(e.firstMs), num(e.freshMs), num(e.rec), calls, str(e.v, 20)]);
+  });
+  if (rows.length) {
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(3000)) return 0; // 混雑時は書かずに、端末に残して次回また送ってもらう
+    try {
+      var sh = getSheet_(SHEET_USAGE);
+      sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    } finally {
+      lock.releaseLock();
+    }
+  }
+  return taken.length;
+}
+
+// ホスト用: 週ごと(月曜始まり)の「開いた人・開いたのに記録しなかった人・待ち時間」の集計
+function actionGetUsage_(body) {
+  var userId = String(body.userId || '');
+  if (!isHost_(userId)) throw new Error('利用状況はホストのみ見られます');
+  var weeksBack = Math.max(1, Math.min(12, Number(body.weeks) || 6));
+  var rows = getSheet_(SHEET_USAGE).getDataRange().getValues();
+  var shots = getShots_();
+  var names = {};
+  getKnownUsers_().forEach(function (m) { names[m.userId] = m.name; });
+  uniqueMembers_(shots).forEach(function (m) { names[m.userId] = m.name; });
+  var iso = function (v) { return (v instanceof Date) ? v.toISOString() : String(v || ''); };
+  var weekOf = function (isoStr) { var t = new Date(isoStr); return isNaN(t.getTime()) ? null : weekKeyOf_(dateOf_(t)); };
+  var byWeek = {};
+  var wk_ = function (k) { return byWeek[k] || (byWeek[k] = { opens: {}, freshMs: [], calls: {} }); };
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    if (!r[1]) continue;
+    var wk = weekOf(iso(r[4])) || weekOf(iso(r[0]));
+    if (!wk) continue;
+    var w = wk_(wk), uid = String(r[2]);
+    if (r[1] === 'open') {
+      w.opens[uid] = (w.opens[uid] || 0) + 1;
+    } else if (r[1] === 'sum') {
+      if (r[7] !== '' && r[7] != null) w.freshMs.push(Number(r[7]));
+      var calls = {};
+      try { calls = JSON.parse(String(r[9] || '{}')); } catch (e) { calls = {}; }
+      Object.keys(calls).forEach(function (action) {
+        var c = calls[action] || {}, agg = w.calls[action] || (w.calls[action] = { n: 0, ok: 0, fail: 0, app: 0, retried: 0, sumMs: 0, maxMs: 0 });
+        ['n', 'ok', 'fail', 'app', 'retried', 'sumMs'].forEach(function (k) { agg[k] += Number(c[k]) || 0; });
+        agg.maxMs = Math.max(agg.maxMs, Number(c.maxMs) || 0);
+      });
+    }
+  }
+  var recByWeek = {};
+  shots.forEach(function (s) {
+    var k = weekKeyOf_(s.date);
+    var m = recByWeek[k] || (recByWeek[k] = {});
+    m[s.userId] = (m[s.userId] || 0) + s.attempts;
+  });
+  var pct = function (arr, p) { if (!arr.length) return null; var a = arr.slice().sort(function (x, y) { return x - y; }); return a[Math.min(a.length - 1, Math.floor(p * a.length))]; };
+  var thisMonday = weekKeyOf_(dateOf_(new Date()));
+  var out = [];
+  for (var k = 0; k < weeksBack; k++) {
+    var md = new Date(thisMonday + 'T00:00:00'); md.setDate(md.getDate() - 7 * k);
+    var key = dateOf_(md);
+    var w2 = byWeek[key] || { opens: {}, freshMs: [], calls: {} };
+    var recs = recByWeek[key] || {};
+    var openers = Object.keys(w2.opens).map(function (uid) { return { userId: uid, name: names[uid] || uid, opens: w2.opens[uid], attempts: recs[uid] || 0 }; })
+      .sort(function (a, b) { return b.opens - a.opens; });
+    out.push({
+      week: key,
+      openers: openers,
+      openedNoRecord: openers.filter(function (o) { return !o.attempts; }).map(function (o) { return o.name; }),
+      recordedPlayers: Object.keys(recs).length,
+      freshMs: { n: w2.freshMs.length, p50: pct(w2.freshMs, 0.5), p90: pct(w2.freshMs, 0.9), max: w2.freshMs.length ? Math.max.apply(null, w2.freshMs) : null },
+      calls: w2.calls
+    });
+  }
+  return { weeks: out, codeVersion: CODE_VERSION };
+}
+
+// 画面側に古いスポットID(初めて開いた時の内蔵スポット・端末の控え)が残っていた場合に、名前で今のスポットに付け替える。
+// どちらでも見つからなければ保存しない(どこにも表示されない記録をシートに残さないため)
+function resolveSpotId_(spotId, spotName, ownerUserId) {
+  var all = getSpots_(ownerUserId, true);
+  for (var i = 0; i < all.length; i++) if (all[i].id === spotId) return spotId;
+  var name = String(spotName || '').trim();
+  if (name) {
+    var shared = all.filter(function (sp) { return sp.name === name && sp.scope !== 'personal'; });
+    if (shared.length) return shared[0].id;
+    var mine = all.filter(function (sp) { return sp.name === name && sp.scope === 'personal' && sp.ownerId === ownerUserId; });
+    if (mine.length) return mine[0].id;
+  }
+  throw new Error('スポットが見つかりません(削除された可能性があります)。アプリを開き直してください');
 }
 
 // 記録がある人 + ホストが作成したproxyメンバー(まだ記録が1本も無くても選択肢に出す)
@@ -367,6 +477,8 @@ function actionRecordShot_(body) {
       if (dupRow) shots = existing;
     }
     if (!dupRow) {
+      // 保存済みの再送(dupRow)のときは付け替えない(既に保存できているので、スポットがその後消えていても成功として返す)
+      spotId = resolveSpotId_(spotId, body.spotName, userId);
       var sh = getSheet_(SHEET_SHOTS);
       sh.appendRow([
         id, new Date().toISOString(), ym, dateOf_(d),
@@ -1892,6 +2004,8 @@ function getSheet_(name) {
       sh.appendRow(['weekKey', 'userId', 'displayName', 'joinedAt']);
     } else if (name === SHEET_LEVELS) {
       sh.appendRow(['userId', 'shownLevel', 'lastAdvancedDate', 'updatedAt']);
+    } else if (name === SHEET_USAGE) {
+      sh.appendRow(['receivedAt', 'kind', 'userId', 'sessionId', 'openedAt', 'fromCache', 'firstViewMs', 'freshMs', 'records', 'calls', 'appVersion']);
     }
   }
   return sh;

@@ -31,7 +31,7 @@ function initData(isHost) {
 async function boot(opts) {
   opts = opts || {};
   const c = makeClient({ userId: ME, localStorage: opts.localStorage });
-  c.handlers.init = () => { const d = initData(opts.isHost); return opts.patchInit ? opts.patchInit(d) : d; };
+  c.handlers.init = (b) => { const d = initData(opts.isHost); return opts.patchInit ? opts.patchInit(d, b) : d; };
   c.handlers.getMyStats = (b) => {
     const who = b.targetUserId || ME;
     const period = b.granularity && b.granularity !== 'month' ? b.period : (b.ym || null);
@@ -448,6 +448,117 @@ const n = (c, action) => c.calls.filter((x) => x.action === action).length;
     assert.strictEqual(c.ctx.state.pendingShots.length, 0, 'キューに残っている');
     assert.strictEqual(c.ctx.state.myStats.total.attempts, 20, '二重に足された: ' + c.ctx.state.myStats.total.attempts);
     assert.strictEqual(n(c, 'recordShot'), 0, '保存済みの記録をもう一度送った');
+  });
+
+  // ---- 初めて開いた端末(前回の控えが無い): サーバーの返事を待たずに記録できる ----
+  async function bootSlow(opts) { // 最初のinitの返事を遅らせて起動する(返事が来る前の状態を見るため)
+    opts = opts || {};
+    const c = makeClient({ userId: ME, localStorage: opts.localStorage });
+    c.handlers.init = (b) => { const d = initData(false); if (opts.initFail) throw { network: true }; return opts.patchInit ? opts.patchInit(d, b) : d; };
+    c.handlers.getMyStats = () => stats(YM, {});
+    c.handlers.getHistory = () => ({ items: [] });
+    c.delays.push(opts.initDelay == null ? 600 : opts.initDelay);
+    loadScript(c, SCRIPT);
+    await flush(60);
+    return c;
+  }
+  const noHistory = (d) => { d.history = []; d.myStats = stats(YM, {}); d.streak = 0; return d; };
+
+  await test('初回の端末: 起動データの返事が来る前でも、内蔵の共通スポット8つでコートが描かれ、初回案内が出る', async () => {
+    const c = await bootSlow({ patchInit: noHistory });
+    assert.strictEqual(c.ctx.state.bootstrapping, true, '内蔵スポットで仮表示になっていない');
+    assert.strictEqual(c.ctx.state.spots.length, 8);
+    assert.ok(c.ctx.state.spots.some((s) => s.name === 'フリースロー'));
+    assert.ok(c.el('courtWrap')._children.length >= 8, 'コートにスポットが描かれていない: ' + c.el('courtWrap')._children.length);
+    assert.ok(!c.el('firstRunCard').classList.contains('hidden'), '初回案内が出ていない');
+    assert.ok(/フリースロー/.test(c.el('firstRunDesc').textContent));
+  });
+
+  await test('初回の端末: 返事を待たずに1本目を記録でき、記録は返事を待たずに送られる。返事が届いたら本物のスポットに置き換わる', async () => {
+    const c = await bootSlow({ patchInit: noHistory, initDelay: 800 });
+    c.handlers.recordShot = (b) => ({ id: b.clientId, myStats: stats(YM, { s1: [3, 5] }), history: [{ id: b.clientId, date: b.date, ym: YM, spotId: 's1', spot: '左コーナー', makes: 3, attempts: 5, pct: 60, situation: '' }], streak: 1 });
+    c.run("openRecord(state.spots.filter(function(s){return s.name==='フリースロー';})[0], {attempts:5, makes:3})");
+    c.fire('recSave');
+    await flush(50);
+    assert.ok(c.ctx.state.bootstrapping, 'まだ返事前のはず');
+    assert.strictEqual(n(c, 'recordShot'), 1, '返事を待たずに送られていない');
+    const sent = c.calls.find((x) => x.action === 'recordShot').body;
+    assert.strictEqual(sent.spotName, 'フリースロー');
+    assert.strictEqual(sent.spotId, '185a2225-041b-4cc4-95fd-166c0f0e946c');
+    assert.ok(c.el('firstRunCard').classList.contains('hidden'), '保存後も初回案内が出ている');
+    await flush(900);
+    assert.strictEqual(c.ctx.state.bootstrapping, false);
+    assert.strictEqual(c.ctx.state.spots.length, 3, '本物のスポットに置き換わっていない');
+  });
+
+  await test('初回の端末: 起動データの取得が失敗しても、エラー画面にせず内蔵スポットのまま記録でき、記録は未送信キューに入る', async () => {
+    const c = await bootSlow({ initFail: true, initDelay: 5 });
+    await flush(250);
+    assert.ok(!c.el('loadErrorBg').classList.contains('open'), '記録できるのにエラー画面が出ている');
+    assert.strictEqual(c.ctx.state.bootstrapping, true);
+    c.handlers.recordShot = () => { throw { network: true }; };
+    c.run("openRecord(state.spots[0], {attempts:5, makes:2})");
+    c.fire('recSave');
+    await flush(250);
+    assert.strictEqual(c.ctx.state.pendingShots.length, 1, '未送信キューに入っていない');
+  });
+
+  await test('送信中の記録: 返事待ちの間に起動データ(その記録を含まない)が届いても、確率と履歴から消えず「送信中」と出る。返事が来たら普通の行になる', async () => {
+    const c = await boot();
+    c.handlers.recordShot = (b) => ({ id: b.clientId, myStats: stats(YM, { s1: [7, 15], s2: [6, 10] }), history: [{ id: b.clientId, date: b.date, ym: YM, spotId: 's1', spot: '左コーナー', makes: 3, attempts: 5, pct: 60, situation: '' }].concat(HIST), streak: 3 });
+    c.delays.push(800);
+    c.run("openRecord(state.spots[0], {attempts:5, makes:3})");
+    c.el('recDate').value = '2026-09-25'; // 表示中の月(YM)の日付にする(実行日が別の月だと確率に数えられないため)
+    c.fire('recSave');
+    await flush(40);
+    assert.strictEqual(c.ctx.state.myStats.total.attempts, 25);
+    c.run('applyBootData(' + JSON.stringify(initData()) + ')'); // 記録を含まない起動データが、返事待ちの間に届く
+    assert.strictEqual(c.ctx.state.myStats.total.attempts, 25, '送信中の記録が確率から消えた: ' + c.ctx.state.myStats.total.attempts);
+    assert.ok(/送信中/.test(c.el('historyList')._children.map((x) => x.innerHTML).join('')), '履歴に「送信中」が出ていない');
+    await flush(900);
+    assert.ok(!/送信中/.test(c.el('historyList')._children.map((x) => x.innerHTML).join('')), '返事が来たのに送信中のまま');
+    assert.strictEqual(Object.keys(c.ctx.state.inFlight).length, 0);
+  });
+
+  await test('保存直後の履歴: 返事を待つ間は「送信中」の行がすぐ出て、通信できなければ「未送信」の行に切り替わる(以前は何も出なかった)', async () => {
+    const c = await boot();
+    const rows = () => c.el('historyList')._children.map((x) => x.innerHTML).join('');
+    c.handlers.recordShot = () => { throw { network: true }; };
+    c.delays.push(100);
+    c.run("openRecord(state.spots[0], {attempts:5, makes:3})");
+    c.el('recDate').value = '2026-09-25';
+    c.fire('recSave');
+    await flush(20);
+    assert.ok(/送信中/.test(rows()), '保存直後に履歴へ出ていない: ' + rows().slice(0, 120));
+    await flush(500);
+    assert.ok(/未送信/.test(rows()) && !/送信中/.test(rows()), '未送信に切り替わっていない: ' + rows().slice(0, 160));
+    assert.strictEqual(c.ctx.state.pendingShots.length, 1);
+  });
+
+  // ---- 利用状況(開いた事実・待ち時間)を次の起動データ取得にまとめて送る ----
+  await test('利用状況: 開いた事実がinitに載って送られ、サーバーが受け取った件数だけ端末から消える。古いサーバー(件数を返さない)なら残して次回また送る', async () => {
+    let seen = null;
+    const c = await boot({ patchInit: (d, b) => { seen = b; d.usageAccepted = (b.usage || []).length; return d; } });
+    assert.ok(seen && Array.isArray(seen.usage) && seen.usage.some((u) => u.k === 'open' && u.v === c.run('APP_VERSION')), JSON.stringify(seen));
+    assert.strictEqual(c.run('usageQueue.length'), 0, '届いたのに端末に残っている');
+    const c2 = await boot({ patchInit: (d) => d });
+    assert.ok(c2.run('usageQueue.length') >= 1, '届いたか分からないのに消した');
+  });
+
+  await test('利用状況: 開いている間の通信の秒数と成否が集計され、次に開いた時に「前回分」としてまとめて送られる', async () => {
+    const c1 = await boot({ patchInit: (d) => d });
+    c1.handlers.getHistory = () => { throw { network: true }; };
+    await c1.run("api('getHistory', {userId:'Uself', targetUserId:'Uself', limit:20}).catch(function(){})");
+    const cur = JSON.parse(c1.store.get('usageCurrent_v1'));
+    assert.ok(cur.calls.init && cur.calls.init.ok >= 1, 'initの成功が記録されていない');
+    assert.ok(cur.calls.getHistory && cur.calls.getHistory.fail === 1 && cur.calls.getHistory.retried === 1, JSON.stringify(cur.calls));
+    assert.ok(typeof cur.freshMs === 'number', '最新データが届くまでの秒数が記録されていない');
+    let seen = null;
+    const c2 = await boot({ localStorage: Object.fromEntries(c1.store), patchInit: (d, b) => { seen = b; d.usageAccepted = (b.usage || []).length; return d; } });
+    const sums = seen.usage.filter((u) => u.k === 'sum');
+    assert.strictEqual(sums.length, 1, '前回分の集計が送られていない: ' + JSON.stringify(seen.usage.map((u) => u.k)));
+    assert.ok(sums[0].calls.getHistory.fail === 1);
+    assert.ok(c2.run('usageQueue.length') === 0);
   });
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

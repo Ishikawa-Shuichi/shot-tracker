@@ -48,6 +48,7 @@ function makeEnv(opts) {
         };
       },
       appendRow(arr) { counters.appendRow++; data.push(arr.map(autoConvert)); },
+      getLastRow() { return data.length; },
       deleteRow(n) { counters.deleteRow++; if (n < 1 || n > data.length) throw new Error('deleteRow: 範囲外 ' + n); data.splice(n - 1, 1); },
     };
     return sheet;
@@ -65,6 +66,7 @@ function makeEnv(opts) {
   const lockState = { held: false, acquired: 0 };
   const lock = {
     waitLock() { if (lockState.held) throw new Error('lock: 二重取得(解放漏れ)'); lockState.held = true; lockState.acquired++; },
+    tryLock() { if (lockState.held) return false; lockState.held = true; lockState.acquired++; return true; },
     releaseLock() { lockState.held = false; },
   };
   const ctx = {

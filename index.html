@@ -572,6 +572,21 @@
 var LIFF_ID = '2010830232-G909qxQO';          // LINE Developers の LIFF ID
 var GAS_URL = 'https://script.google.com/macros/s/AKfycbzPTkVAbbZZqNdctGd8bi-GVE2MGaTbhLpmOQCqHZ2vyjO4q3ngSM96mB2jZoFmPFpw/exec';          // GASウェブアプリの /exec URL
 var API_TOKEN = '';                           // GAS側 API_TOKEN と一致(未使用なら空)
+// 画面側の版。利用状況の記録に載せて「選手の端末が新しい版を使っているか」を確かめる(GitHub Pagesは反映に時間がかかるため)
+var APP_VERSION = '2026-10-08b';
+// 初めて開いた端末(前回の控えが無い)でも、サーバーの返事を待たずに記録を始められるように内蔵している共通スポット。
+// 2026-10-08に本番から読み取った値。サーバーの返事が届いたら本物に置き換わる。
+// スポットを追加・削除しても壊れはしない(サーバーは見つからないIDを名前で今のスポットに付け替える)が、ずれたら更新する
+var BOOTSTRAP_SPOTS = [
+  { id:'dbca16ac-5f8e-4c21-a8a9-b3f5ff823dfb', name:'左コーナー', x:4,  y:10, order:0,  scope:'shared', ownerId:'', situations:[] },
+  { id:'36971bbf-32f0-4ee4-9742-cbe1c0fc641e', name:'左ウイング', x:11, y:37, order:1,  scope:'shared', ownerId:'', situations:[] },
+  { id:'11a0a638-15fa-4658-88ae-51df5d2da423', name:'トップ',     x:51, y:66, order:2,  scope:'shared', ownerId:'', situations:[] },
+  { id:'a054abd8-df0c-4843-ae00-cd597939ccf6', name:'右ウイング', x:88, y:39, order:3,  scope:'shared', ownerId:'', situations:[] },
+  { id:'82111560-9c35-4fa5-b3c8-a41467b1b1dc', name:'右コーナー', x:97, y:12, order:4,  scope:'shared', ownerId:'', situations:[] },
+  { id:'185a2225-041b-4cc4-95fd-166c0f0e946c', name:'フリースロー', x:50, y:42, order:9, scope:'shared', ownerId:'', situations:[] },
+  { id:'69b5377f-cc91-4897-ac7d-dfe13993f429', name:'右スロット', x:65, y:59, order:11, scope:'shared', ownerId:'', situations:[] },
+  { id:'ea0af22d-d9c7-4b8c-8eae-746018523ed0', name:'左スロット', x:36, y:59, order:12, scope:'shared', ownerId:'', situations:[] }
+];
 // ================================================================
 
 var state = {
@@ -607,6 +622,8 @@ var state = {
   myLevel: null,             // 表示レベル(サーバーが記録のたびに1日1段階ずつ本来のレベルへ追いつかせる)
   trophyTotal: 0,            // トロフィーの総数(未獲得分を「？？？」で見せる用)
   firstRecordDone: false,    // このセッション中に初めての記録を保存した(初回案内をサーバー応答を待たずに消すため)
+  bootstrapping: false,      // 前回の控えが無く、内蔵スポットで仮表示している(サーバーの最初の返事がまだ届いていない)
+  inFlight: {},              // 送信中(まだ確定の返事が無い)の新規記録。clientId → 記録。履歴に「送信中」で見せ、起動データで消されないようにする
   historyItems: [],          // 直近取得した(未送信分を含まない)履歴。未送信分と合成して表示するために保持
   syncing: false              // 未送信キューを送信中かどうか(二重実行防止)
 };
@@ -666,12 +683,25 @@ var API_TIMEOUT_MS = 45000;
 // 通信エラーと同じ扱いにして再試行・未送信キューに回す(記録の保存はclientIdで重複しないので、やり直しても安全)
 function transientServerError(msg){ var e = new Error(msg); e.isNetworkError = true; return e; }
 function isDoGetShaped(data){ return !!data && typeof data === 'object' && data.status === 'alive' && 'time' in data; }
+// 呼び出しごとに「何秒かかったか・成功/失敗・何回やり直したか」を利用状況として記録する(選手の実機での待ち時間を測るため)
 async function api(action, payload, opts){
-  opts = opts || {};
+  opts = Object.assign({}, opts || {});
+  var t0 = Date.now();
+  try{
+    var out = await apiRaw(action, payload, opts);
+    usageNoteCall(action, Date.now() - t0, 'ok', opts.__attempts || 1);
+    return out;
+  }catch(e){
+    usageNoteCall(action, Date.now() - t0, (e && e.isNetworkError) ? 'fail' : 'app', opts.__attempts || 1);
+    throw e;
+  }
+}
+async function apiRaw(action, payload, opts){
   var maxRetries = opts.retries != null ? opts.retries : (NO_RETRY_ACTIONS[action] ? 0 : 2);
   var timeoutMs = opts.timeoutMs || API_TIMEOUT_MS;
   var lastErr;
   for(var attempt=0; attempt<=maxRetries; attempt++){
+    opts.__attempts = attempt + 1;
     var controller = ('AbortController' in window) ? new AbortController() : null;
     var timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
     var res;
@@ -773,6 +803,7 @@ function removePendingOp(opId){
 // (サーバー側はclientIdで重複排除されるため、実際には届いていた場合に二重送信しても安全)
 var INFLIGHT_KEY = 'inFlightShots_v1';
 function setInFlight(payload){
+  state.inFlight[payload.clientId] = payload; // 画面用(履歴に「送信中」で出す・起動データの反映で消されないようにする)
   try{
     var m = JSON.parse(localStorage.getItem(INFLIGHT_KEY) || '{}');
     m[payload.clientId] = payload;
@@ -780,6 +811,7 @@ function setInFlight(payload){
   }catch(e){}
 }
 function clearInFlight(clientId){
+  delete state.inFlight[clientId];
   try{
     var m = JSON.parse(localStorage.getItem(INFLIGHT_KEY) || '{}');
     delete m[clientId];
@@ -1041,6 +1073,41 @@ function applyBootData(d, fromCache){
   fillMyStatsWhoSelector();
   // まだサーバーに送れていない記録(未送信キュー)の分を統計に上乗せし、見た目を実態に合わせる
   state.pendingShots.forEach(function(p){ applyOptimisticShot(p); });
+  if(!fromCache){
+    state.bootstrapping = false;
+    // 送信中の記録(返事待ち)も上乗せする。GASは返事に20〜40秒かかることがあり、その間に起動データが届くと
+    // 直前に入れた記録が画面から消え、「保存できていない」と思って入れ直す(二重登録)原因になるため。
+    // サーバーの履歴に既に入っていれば(保存済み)二重に足さない
+    var serverIds = {}; (d.history || []).forEach(function(h){ if(h && h.id) serverIds[h.id] = true; });
+    Object.keys(state.inFlight).forEach(function(cid){
+      if(!serverIds[cid] && !isPendingId(cid)) applyOptimisticShot(state.inFlight[cid]);
+    });
+  }
+}
+
+// 前回の控えが無い端末(初めて開いた人・端末を替えた人)は、サーバーの最初の返事を待たずに内蔵の共通スポットで画面を作る。
+// 記録はいつもどおり「即閉じ→裏で送信」で、返事が来なければ未送信キューに入るので、ここで記録しても失われない。
+// 2026-10-08: 返事に20〜40秒かかることがあり、その間、初めての人は何もできない(未記録の6人が1本目に進めていない)状態だった
+function emptyStatsFor(spots, ym){
+  return { granularity:'month', period: ym, situations: [], hasLiveRecords: false, weekAttempts: 0, total: { makes:0, attempts:0, pct:0 },
+    spots: spots.map(function(sp){ return { spotId: sp.id, name: sp.name, scope: sp.scope, makes:0, attempts:0, pct:0, live: { unlocked:false, ever:false }, situations: null }; }) };
+}
+function applyBootstrap(){
+  var ym = todayStr().slice(0,7);
+  state.spots = BOOTSTRAP_SPOTS.map(function(s){ return Object.assign({}, s, { situations: [] }); });
+  state.isHost = false;
+  state.members = [];
+  buildYmOptions(ym);
+  state.ym = ym;
+  document.getElementById('ymSel').value = ym;
+  state.myStats = emptyStatsFor(state.spots, ym);
+  state.historyItems = [];
+  state.historyFresh = false;
+  state.historyLoading = false;
+  state.bootstrapping = true;
+  renderCourt();
+  renderHistoryList(); // 初回案内(isFirstRun)もここで出る
+  state.pendingShots.forEach(function(p){ applyOptimisticShot(p); });
 }
 
 // LIFF SDK(defer読み込み)が使える状態になるまで待つ。電波が悪く読み込めない場合はfalseを返して先へ進む
@@ -1058,6 +1125,44 @@ function waitForLiffSdk(timeoutMs){
 }
 
 var bootCache = loadBootCache();
+
+// ---- 利用状況の記録 ----
+// 「アプリを開いたのに記録しなかった」のか「そもそも開いていない」のか、「遅くて諦めた」のかを区別するため、
+// 開いた事実と、開いている間の通信の秒数・成否を端末に貯め、次に起動データを取りに行く時(init)にまとめて送る。
+// 届いたとサーバーが返した件数だけ端末から消す(届かなければ次回また送る)。記録するのは日時・秒数・回数だけ
+var USAGE_QUEUE_KEY = 'usageQueue_v1';     // まだ届けていない分(開いた事実・前回開いていた間の集計)
+var USAGE_CURRENT_KEY = 'usageCurrent_v1'; // 今回開いている間の集計(次に開いた時に「前回分」として送る)
+var USAGE_MAX = 40;
+var PAGE_T0 = Date.now();
+function loadJsonLS(key, def){ try{ var v = JSON.parse(localStorage.getItem(key) || 'null'); return v == null ? def : v; }catch(e){ return def; } }
+function saveJsonLS(key, v){ try{ localStorage.setItem(key, JSON.stringify(v)); }catch(e){} }
+var usageQueue = loadJsonLS(USAGE_QUEUE_KEY, []);
+if(!Array.isArray(usageQueue)) usageQueue = [];
+(function(){
+  var prev = loadJsonLS(USAGE_CURRENT_KEY, null);
+  if(prev && prev.sid){ prev.k = 'sum'; usageQueue.push(prev); }
+})();
+var usageNow = { k:'sum', sid: genId(), at: new Date().toISOString(), cache: !!(bootCache && bootCache.data), firstMs: null, freshMs: null, rec: 0, calls: {}, v: APP_VERSION };
+usageQueue.push({ k:'open', sid: usageNow.sid, at: usageNow.at, cache: usageNow.cache, v: APP_VERSION });
+if(usageQueue.length > USAGE_MAX) usageQueue = usageQueue.slice(-USAGE_MAX);
+saveJsonLS(USAGE_QUEUE_KEY, usageQueue);
+saveJsonLS(USAGE_CURRENT_KEY, usageNow);
+function usageNoteCall(action, ms, outcome, attempts){
+  if(typeof usageNow === 'undefined' || !usageNow) return;
+  var c = usageNow.calls[action] || (usageNow.calls[action] = { n:0, ok:0, fail:0, app:0, retried:0, sumMs:0, maxMs:0 });
+  c.n++; c[outcome] = (c[outcome] || 0) + 1;
+  if(attempts > 1) c.retried++;
+  c.sumMs += ms; if(ms > c.maxMs) c.maxMs = ms;
+  saveJsonLS(USAGE_CURRENT_KEY, usageNow);
+}
+function usageMark(field){ if(usageNow[field] == null){ usageNow[field] = Date.now() - PAGE_T0; saveJsonLS(USAGE_CURRENT_KEY, usageNow); } }
+function usageAck(n){ if(n > 0){ usageQueue = usageQueue.slice(n); saveJsonLS(USAGE_QUEUE_KEY, usageQueue); } }
+function initPayload(userId){ return { userId: userId, usage: usageQueue.slice(0, USAGE_MAX) }; }
+
+// 利用者のIDがLINEから届くまでの間に保存ボタンが押された場合に、送信だけ待たせるための合図
+var resolveUserReady;
+var userReady = new Promise(function(r){ resolveUserReady = r; });
+
 var renderedFromCache = false;
 if(bootCache && bootCache.user && bootCache.data){
   // 前回のデータで即座に画面を作る。この時点で記録タブは操作可能
@@ -1066,12 +1171,16 @@ if(bootCache && bootCache.user && bootCache.data){
   applyUserHeader();
   applyBootData(bootCache.data, true);
   renderedFromCache = true;
+  resolveUserReady();
+}else{
+  applyBootstrap(); // 前回の控えが無い: 内蔵の共通スポットで、返事を待たずに記録できる画面を作る
 }
+usageMark('firstMs');
 
 (async function(){
   // キャッシュ表示できた場合は、LIFF初期化の完了を待たずに最新データ取得も並行して始める(直列待ちの解消)
   var earlyFetch = renderedFromCache
-    ? api('init', { userId: state.user.userId }).catch(function(e){ return { __error: e }; })
+    ? api('init', initPayload(state.user.userId)).catch(function(e){ return { __error: e }; })
     : null;
   var cachedUserId = renderedFromCache ? state.user.userId : null;
 
@@ -1095,27 +1204,44 @@ if(bootCache && bootCache.user && bootCache.data){
     }
   }
   applyUserHeader();
+  resolveUserReady();
 
   // まれに前回と違うLINEアカウントでログインしていた場合は、前回ユーザーのデータを見せ続けないよう必ず取り直す
   var userChanged = !!cachedUserId && cachedUserId !== state.user.userId;
   try{
-    var d = (earlyFetch && !userChanged) ? await earlyFetch : await api('init', { userId: state.user.userId });
+    var d = (earlyFetch && !userChanged) ? await earlyFetch : await api('init', initPayload(state.user.userId));
     if(d && d.__error) throw d.__error;
-    applyBootData(d);
-    celebrateBestStreakIfBroken((bootCache && !userChanged) ? bootCache.data : null, d); // キャッシュを上書きする前に前回値と比べる
-    saveBootCache(d);
-    trySyncPending(); // 通信できているタイミングで、未送信キューがあれば送っておく
-    setTimeout(prefetchTrendIfMissing, 3000); // 未送信分の送信を先に済ませてから、推移の初回分だけ先に取っておく
+    applyFreshBoot(d, (bootCache && !userChanged) ? bootCache.data : null);
   }catch(e){
     console.warn('起動時の読み込みに失敗:', e);
-    if(renderedFromCache && !userChanged){
-      // 前回データのまま動作継続できる。記録は未送信キューに貯まるので問題ない
-      toast('📴 最新データを取得できません(前回のデータを表示中。記録はできます)');
+    if((renderedFromCache && !userChanged) || state.bootstrapping){
+      // 前回データ(または内蔵スポット)のまま動作継続できる。記録は未送信キューに貯まるので問題ない
+      toast('📴 最新データを取得できません(記録はできます。あとで自動で送ります)', 3500);
+      if(state.bootstrapping) retryBootLater(1);
     }else{
       document.getElementById('loadErrorBg').classList.add('open');
     }
   }
 })();
+// 起動データ(サーバーの最新)を反映する。起動時と、内蔵スポットで仮表示中の再取得の両方から呼ぶ
+function applyFreshBoot(d, prevCacheData){
+  applyBootData(d);
+  usageMark('freshMs');
+  usageAck(d.usageAccepted || 0);
+  celebrateBestStreakIfBroken(prevCacheData, d); // キャッシュを上書きする前に前回値と比べる
+  saveBootCache(d);
+  trySyncPending(); // 通信できているタイミングで、未送信キューがあれば送っておく
+  setTimeout(prefetchTrendIfMissing, 3000); // 未送信分の送信を先に済ませてから、推移の初回分だけ先に取っておく
+}
+// 内蔵スポットで仮表示中に起動データの取得が失敗したら、少し待ってもう一度取りに行く(最大3回)
+function retryBootLater(n){
+  if(n > 3) return;
+  setTimeout(async function(){
+    if(!state.bootstrapping) return;
+    try{ applyFreshBoot(await api('init', initPayload(state.user.userId)), null); }
+    catch(e){ retryBootLater(n + 1); }
+  }, 30000);
+}
 onTap(document.getElementById('loadRetryBtn'), function(){ location.reload(); });
 
 // 連続練習日数バッジ(ヘッダー)。1日以上続いていれば表示する。
@@ -1536,6 +1662,9 @@ onTap(document.getElementById('recSave'), async function(){
   var token = state.saveToken;
   if(handledSaveTokens[token]) return; // 連打・閉じるアニメーション中の再タップを無視
   handledSaveTokens[token] = true;
+  // 初めて開いた直後でLINEから利用者IDがまだ届いていなければ、届くまで待つ(誰の記録か決まらないまま送らない)
+  if(!state.user.userId){ await userReady; target = state.recordingAs || { userId: state.user.userId, name: state.user.displayName }; }
+  usageNow.rec++; saveJsonLS(USAGE_CURRENT_KEY, usageNow);
 
   var prevStreak = state.streak;
   // シチュエーションの適用ルール:
@@ -1559,6 +1688,7 @@ onTap(document.getElementById('recSave'), async function(){
   var wasFirstRecord = isFirstRun() && target.userId === state.user.userId;
   closeRecord();
   if(wasFirstRecord) state.firstRecordDone = true; // 初回案内はこの瞬間に消す(サーバー応答を待たない)
+  setInFlight(payload); // 送信の途中でアプリを閉じても記録が消えないよう、送信中の控えを残す(履歴にも「送信中」としてすぐ出る)
   applyOptimisticShot(payload);
   if(wasFirstRecord) toast('🎉 はじめての記録！この調子で3日記録すると、最初のトロフィーが解放されます', 4500);
   else toast('保存しました ✅');
@@ -1567,7 +1697,6 @@ onTap(document.getElementById('recSave'), async function(){
 
   // ここから先は画面を待たせない(失敗しても記録は未送信キューに残って自動再送される)
   (async function(){
-    setInFlight(payload); // 送信の途中でアプリを閉じても記録が消えないよう、送信中の控えを残す
     try{
       var res = await api('recordShot', payload);
       clearInFlight(payload.clientId);
@@ -1603,6 +1732,7 @@ onTap(document.getElementById('recSave'), async function(){
       if(e.isNetworkError){
         // オフライン: 端末に貯めて後で自動送信する(画面には反映済み)
         addPending(payload);
+        renderHistoryList(); // 「送信中」だった行を「未送信」に切り替える
         toast('📴 電波が弱いため未送信で保存しました(自動で再送信します)');
       }else{
         // サーバーに明確に拒否された(入力エラー等)。反映してしまった概算値を正しい値に戻す
@@ -2407,16 +2537,29 @@ function renderHistoryList(){
       return { id:p.clientId, date:p.date, ym:p.ym, spotId:p.spotId, spot:p.spotName, situation:p.situation||'',
         makes:p.makes, attempts:p.attempts, pct: p.attempts>0 ? Math.round(p.makes/p.attempts*1000)/10 : 0, pending:true };
     });
-  var merged = pendingView.concat(state.historyItems);
+  // 送信中(返事待ち)の記録も、サーバーの履歴に載るまでは「送信中」として上に出す(消えたように見せない)
+  var shownIds = {}; state.historyItems.forEach(function(h){ if(h && h.id) shownIds[h.id] = true; });
+  pendingView.forEach(function(p){ shownIds[p.id] = true; });
+  var inFlightView = Object.keys(state.inFlight)
+    .map(function(cid){ return state.inFlight[cid]; })
+    .filter(function(p){ return p.userId === viewUserId && !shownIds[p.clientId]; })
+    .reverse()
+    .map(function(p){
+      return { id:p.clientId, date:p.date, ym:p.ym, spotId:p.spotId, spot:p.spotName, situation:p.situation||'',
+        makes:p.makes, attempts:p.attempts, pct: p.attempts>0 ? Math.round(p.makes/p.attempts*1000)/10 : 0, inFlight:true };
+    });
+  var merged = inFlightView.concat(pendingView).concat(state.historyItems);
   var host=document.getElementById('historyList'); host.innerHTML='';
   document.getElementById('histCount').textContent = merged.length ? '' : (state.historyLoading ? '読み込み中…' : 'まだありません');
   merged.forEach(function(it){
     var el=document.createElement('div'); el.className='listitem'; el.style.cursor='pointer';
-    var tag = (it.pending || it.pendingEdit) ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>' : '';
+    var tag = (it.pending || it.pendingEdit) ? ' <span class="pill" style="color:var(--bad); border-color:var(--bad)">未送信</span>'
+      : (it.inFlight ? ' <span class="pill" style="color:var(--muted)">送信中</span>' : '');
     var sitTag = it.situation ? ' <span class="pill" style="color:var(--accent2); border-color:var(--accent2)">'+esc(it.situation)+'</span>' : '';
     el.innerHTML='<span>'+esc(it.spot)+sitTag+' <span class="muted" style="font-size:12px">'+it.date+'</span>'+tag+'</span>'
       +'<span><b>'+it.makes+'/'+it.attempts+'</b> <span class="pill">'+it.pct+'%</span> <span class="muted">›</span></span>';
-    onTap(el, function(){ openEditShot(it); });
+    // 送信中の記録はまだサーバーに無いので編集できない(編集を送ると「見つからない」になる)
+    onTap(el, function(){ if(it.inFlight){ toast('送信中です。少し待ってから開いてください'); return; } openEditShot(it); });
     host.appendChild(el);
   });
   renderFirstRunCard(); // 履歴が空(=まだ1本も記録していない)なら初回案内を出し、1件できたら消す

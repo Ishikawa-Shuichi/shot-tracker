@@ -12,7 +12,10 @@ function makeClassList() {
 function makeEl(tag, id) {
   const el = {
     tagName: String(tag || 'div').toUpperCase(), id: id || '', _listeners: {}, _children: [], dataset: {}, style: {},
-    value: '', textContent: '', innerHTML: '', checked: false, disabled: false, options: [], classList: makeClassList(),
+    value: '', textContent: '', checked: false, disabled: false, options: [], classList: makeClassList(),
+    // innerHTML = '' は本物の画面では子要素を全部消す。履歴リストのように「毎回作り直す」描画の結果を検証できるよう、_children も空にする
+    get innerHTML() { return this._html || ''; },
+    set innerHTML(v) { this._html = v; if (v === '') this._children.length = 0; },
     addEventListener(t, fn) { (this._listeners[t] = this._listeners[t] || []).push(fn); },
     removeEventListener() {},
     appendChild(c) { this._children.push(c); if (this.tagName === 'SELECT' && c.tagName === 'OPTION') { this.options.push(c); if (this.options.length === 1 && !this.value) this.value = c.value; } return c; },

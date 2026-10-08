@@ -269,5 +269,58 @@ test('週次投稿: フェス週の日曜は「次の」行を付けず、最終
   assert.ok(texts.every((t) => /最終結果/.test(t)), texts[0]);
 });
 
+// ---- 利用状況(開いた事実・待ち時間) ----
+test('init: 端末から届いた利用状況をUsageシートに足し、受け取った件数を返す(形のおかしい項目は捨てるが件数には数える・最大40件)', () => {
+  const { ctx, env } = setupAt('2026-10-08T16:00:00+09:00');
+  const usage = [
+    { k: 'open', sid: 's1', at: '2026-10-08T06:00:00.000Z', cache: false, v: '2026-10-08b' },
+    { k: 'sum', sid: 's0', at: '2026-10-07T10:00:00.000Z', firstMs: 40, freshMs: 21000, rec: 2, calls: { init: { n: 1, ok: 1, fail: 0, app: 0, retried: 0, sumMs: 21000, maxMs: 21000 } }, v: '2026-10-08b' },
+    { k: 'evil', sid: 'x' }, null,
+  ];
+  const res = ctx.actionInit_({ userId: A, usage });
+  assert.strictEqual(res.usageAccepted, 4);
+  const rows = env.sheets.Usage._data;
+  assert.strictEqual(rows.length, 3, 'ヘッダー+2行のはず: ' + rows.length);
+  assert.deepStrictEqual([rows[1][1], rows[1][2], rows[1][3]], ['open', A, 's1']);
+  assert.strictEqual(rows[2][7], 21000);
+  assert.ok(/"init"/.test(rows[2][9]));
+  const many = Array.from({ length: 55 }, (_, i) => ({ k: 'open', sid: 'm' + i, at: '2026-10-08T06:00:00.000Z' }));
+  assert.strictEqual(ctx.actionInit_({ userId: A, usage: many }).usageAccepted, 40);
+  assert.strictEqual(ctx.actionInit_({ userId: A }).usageAccepted, 0, 'usage無し(古い画面)でも起動データは返る');
+});
+
+test('getUsage(ホスト専用): 週ごとに「開いた人・開いたのに記録しなかった人・起動の待ち時間」を返す', () => {
+  const { ctx, shots } = setupAt('2026-10-08T16:00:00+09:00');
+  shots.appendRow(['r8', '2026-10-06T10:00:00.000Z', '2026-10', '2026-10-06', A, 'Aさん', 's-lc', 3, 5, '']);
+  ctx.invalidateShotsCache_();
+  ctx.actionInit_({ userId: A, usage: [{ k: 'open', sid: 'a1', at: '2026-10-06T09:00:00.000Z' }, { k: 'open', sid: 'a2', at: '2026-10-07T09:00:00.000Z' },
+    { k: 'sum', sid: 'a1', at: '2026-10-06T09:00:00.000Z', freshMs: 30000, calls: { init: { n: 1, ok: 0, fail: 1, app: 0, retried: 1, sumMs: 45000, maxMs: 45000 } } }] });
+  ctx.actionInit_({ userId: B, usage: [{ k: 'open', sid: 'b1', at: '2026-10-07T11:00:00.000Z' }, { k: 'sum', sid: 'b1', at: '2026-10-07T11:00:00.000Z', freshMs: 2000, calls: {} }] });
+  assert.throws(() => ctx.actionGetUsage_({ userId: A }), /ホストのみ/);
+  const u = ctx.actionGetUsage_({ userId: HOST, weeks: 2 });
+  const w = u.weeks[0];
+  assert.strictEqual(w.week, '2026-10-05');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(w.openers.map((o) => [o.name, o.opens, o.attempts]))), [['Aさん', 2, 5], ['Bさん', 1, 0]]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(w.openedNoRecord)), ['Bさん']);
+  assert.strictEqual(w.freshMs.n, 2); assert.strictEqual(w.freshMs.max, 30000);
+  assert.strictEqual(w.calls.init.fail, 1);
+  assert.strictEqual(u.weeks[1].week, '2026-09-28');
+});
+
+// ---- 古いスポットID(初回の内蔵スポット・端末の控え)からの記録 ----
+test('recordShot: 見つからないスポットIDでも、名前が一致すれば今のスポットに付け替えて保存する。名前も無ければ保存しない', () => {
+  const { ctx } = setup();
+  const res = ctx.actionRecordShot_({ actingUserId: A, userId: A, displayName: 'Aさん', spotId: 'stale-ft', spotName: 'フリースロー', makes: 3, attempts: 5, date: '2026-09-08', clientId: 'c-stale', viewYm: '2026-09' });
+  assert.strictEqual(res.id, 'c-stale');
+  assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'c-stale').spotId, 's-ft');
+  const before = freshReadShots(ctx).length;
+  assert.throws(() => ctx.actionRecordShot_({ actingUserId: A, userId: A, displayName: 'Aさん', spotId: 'gone', spotName: '存在しない', makes: 1, attempts: 1, date: '2026-09-08', clientId: 'c-gone' }), /スポットが見つかりません/);
+  assert.strictEqual(freshReadShots(ctx).length, before, '見つからないスポットの記録が保存された');
+  // 保存済みの再送は、スポットが見つからなくても成功として返す(二重にも保存しない)
+  const again = ctx.actionRecordShot_({ actingUserId: A, userId: A, displayName: 'Aさん', spotId: 'stale-ft', spotName: '', makes: 3, attempts: 5, date: '2026-09-08', clientId: 'c-stale' });
+  assert.strictEqual(again.duplicate, true);
+  assert.strictEqual(freshReadShots(ctx).length, before);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
