@@ -13,7 +13,7 @@ var API_TOKEN = '';
 
 // 本番に「どの版が貼られているか」を確認するための印。貼り付けのたびに日付を更新する。
 // init の返り値(codeVersion)と、ブラウザで /exec を開いたとき(doGet)の version に出る。
-var CODE_VERSION = '2026-10-08a';
+var CODE_VERSION = '2026-10-13a';
 
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
@@ -25,6 +25,13 @@ var VIEWER_HOST_USER_IDS = [
 ];
 function isViewerHost_(userId) { return VIEWER_HOST_USER_IDS.indexOf(String(userId)) !== -1; }
 function isHost_(userId) { return userId === HOST_USER_ID || isViewerHost_(userId); }
+
+// 退部・休会などで、一覧・ランキング・チーム合計・通知から外す人。記録データはシートに残したままにする
+// (ここから消せば、過去の記録も含めて元どおり表示される)。この人が自分でアプリを開いても、自分の記録は空に見える。
+var HIDDEN_USER_IDS = [
+  'Ua58c17d690452c681e3c252e6e4ab163'  // 依田幸樹(2026-10-13 退部)
+];
+function isHiddenUser_(userId) { return HIDDEN_USER_IDS.indexOf(String(userId)) !== -1; }
 
 // 週間MVP自動投稿用: Messaging APIチャネルの「チャネルアクセストークン(長期)」。
 // コード貼り替えで消えないよう、値は「プロジェクトの設定 → スクリプト プロパティ」に
@@ -76,6 +83,7 @@ function broadcastTargets_(memberMap, excludeUserId) {
   return Object.keys(memberMap).filter(function (uid) {
     if (uid === excludeUserId) return false; // 今回の当人(達成者本人)には送らない
     if (uid.indexOf('proxy-') === 0) return false; // 代理記録用の仮メンバーはLINEに存在しない
+    if (isHiddenUser_(uid)) return false; // 退部した人には送らない
     if (BROADCAST_EXCLUDED_USER_IDS.indexOf(uid) !== -1) return false;
     return true;
   });
@@ -1275,7 +1283,7 @@ function actionGetAllLicenses_(body) {
   });
 
   var levelMap = shownLevelMap_(); // 表示レベル(1回だけ読む)。ヘッダーの Lv.◯ と同じ値を一覧にも出す
-  var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0 && !isViewerHost_(uid); });
+  var ids = Object.keys(memberMap).filter(function (uid) { return uid.indexOf('proxy-') !== 0 && !isViewerHost_(uid) && !isHiddenUser_(uid); });
   var list = ids.map(function (uid) {
     var a = acc[uid] || { total: 0, days: {}, bySpot: {}, week: 0 };
     var goal = goalBy[uid] || { weeklyGoal: 0, public: false };
@@ -1885,6 +1893,7 @@ function shotsFromRows_(rows) {
   for (var i = 1; i < rows.length; i++) {
     var r = rows[i];
     if (!r[0]) continue;
+    if (isHiddenUser_(r[4])) continue; // 退部した人の記録は、シートには残したまま、集計・ランキング・チーム合計から外す
     out.push({
       // getShotsRawRows_ が返す行は ts/ym/date を既に正規化済みの文字列にしているので String() で十分
       id: String(r[0]), ts: String(r[1]), ym: String(r[2]), date: String(r[3]),
@@ -2121,6 +2130,7 @@ function getKnownUsers_() {
   for (var i = 1; i < rows.length; i++) {
     if (!rows[i][0]) continue;
     if (isViewerHost_(rows[i][0])) continue; // 閲覧専用ホストは一覧・配信の対象外
+    if (isHiddenUser_(rows[i][0])) continue; // 退部した人も一覧・配信の対象外
     out.push({ userId: String(rows[i][0]), name: String(rows[i][1]) });
   }
   return out;

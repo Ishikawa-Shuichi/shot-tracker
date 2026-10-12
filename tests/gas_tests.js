@@ -322,5 +322,39 @@ test('recordShot: 見つからないスポットIDでも、名前が一致すれ
   assert.strictEqual(freshReadShots(ctx).length, before);
 });
 
+// ---- 退部した人(HIDDEN_USER_IDS)を一覧・ランキング・合計・通知から外す(記録データは残す) ----
+test('退部した人: 記録・ライセンス一覧・メンバー・チーム統計・週次/月間ランキング・通知の宛先のどこにも出ず、シートの記録は残る。他の人の集計は変わらない', () => {
+  const { ctx, shots, env } = setup();
+  const H = ctx.HIDDEN_USER_IDS[0];
+  assert.ok(H, '退部リストが空');
+  const range = ctx.festDateRange_();
+  shots.appendRow(['h1', '2026-09-03T10:00:00.000Z', '2026-09', '2026-09-03', H, '退部さん', 's-lc', 5, 10, '']);
+  shots.appendRow(['h2', range.monday + 'T02:00:00.000Z', range.monday.slice(0, 7), range.monday, H, '退部さん', 's-top', 7, 10, '']);
+  ctx.getSheet_('KnownUsers').appendRow([H, '退部さん', '2026-08-01T00:00:00Z']);
+  ctx.invalidateShotsCache_();
+  const raw = ctx.getSheet_(ctx.SHEET_SHOTS)._data;
+  assert.strictEqual(raw.filter((r) => r[4] === H).length, 2, 'シートの記録は残っているべき');
+  const s = ctx.getShots_();
+  assert.ok(s.every((x) => x.userId !== H), '集計用の記録に出ている');
+  assert.ok(ctx.uniqueMembers_(s).every((m) => m.userId !== H));
+  assert.ok(ctx.getKnownUsers_().every((m) => m.userId !== H));
+  assert.ok(ctx.allMembers_(s).every((m) => m.userId !== H));
+  const lic = ctx.actionGetAllLicenses_({ userId: A }).licenses;
+  assert.ok(lic.every((m) => m.userId !== H), 'ライセンス一覧に出ている');
+  assert.ok(lic.some((m) => m.userId === A) && lic.some((m) => m.userId === B), '他の人まで消えた');
+  // 本人が開いても、自分が「自分」として一覧に出ない(要求者は一覧に必ず補われる作りなので別途確認)
+  assert.ok(ctx.actionGetAllLicenses_({ userId: H }).licenses.every((m) => m.userId !== H), '本人が開くと一覧に出る');
+  const t = ctx.actionGetTeamStats_({ userId: HOST, ym: '2026-09' });
+  assert.ok(t.countRanking.every((r) => r.userId !== H), '本数ランキングに出ている');
+  // Aさんの9月の本数 = 10+10+5(HO)+8(マイスポット) = 33(本数ランキングは個人スポット・シチュエーションも全部合算する)
+  assert.strictEqual(t.countRanking.find((r) => r.userId === A).attempts, 33, 'Aさんの9月の本数が変わった');
+  const memberMap = { [A]: 'A', [B]: 'B', [H]: '退部さん' };
+  assert.ok(ctx.broadcastTargets_(memberMap, null).indexOf(H) === -1, '通知の宛先に入っている');
+  assert.ok(ctx.broadcastTargets_(memberMap, null).indexOf(A) !== -1);
+  // 週次ランキング・フェス合計にも入らない(退部者の記録はフェス週の月曜にも入れてある)
+  assert.ok(ctx.computeWeeklyRanking_(s).ranked.every((r) => r.userId !== H));
+  assert.ok(!('' + JSON.stringify(ctx.festTotals_(s).byUser)).includes(H), 'フェスの貢献に入っている');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
