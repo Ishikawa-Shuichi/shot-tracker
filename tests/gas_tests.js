@@ -307,6 +307,22 @@ test('getUsage(ホスト専用): 週ごとに「開いた人・開いたのに�
   assert.strictEqual(u.weeks[1].week, '2026-09-28');
 });
 
+test('利用状況: 最新データが届かなかった回(freshMsがnull)は空欄で保存し、起動秒数の集計に0として混ぜない(修正前に溜まった0も数えない)', () => {
+  const { ctx, env } = setupAt('2026-10-20T16:00:00+09:00');
+  ctx.actionInit_({ userId: A, usage: [
+    { k: 'sum', sid: 'n1', at: '2026-10-19T09:00:00.000Z', firstMs: 30, freshMs: null, rec: 0, calls: {} },
+    { k: 'sum', sid: 'n2', at: '2026-10-19T10:00:00.000Z', firstMs: 30, freshMs: 8000, rec: 1, calls: {} },
+  ] });
+  const rows = env.sheets.Usage._data;
+  assert.strictEqual(rows[1][7], '', 'nullが0として保存された: ' + JSON.stringify(rows[1][7]));
+  assert.strictEqual(rows[2][7], 8000);
+  assert.strictEqual(rows[1][8], 0, '記録回数0は0のまま');
+  rows.push(['x', 'sum', A, 'old0', '2026-10-19T11:00:00.000Z', 'TRUE', 0, 0, 0, '{}', 'v']); // 修正前の誤記録(0)
+  const w = ctx.actionGetUsage_({ userId: HOST, weeks: 1 }).weeks[0];
+  assert.strictEqual(w.freshMs.n, 1, '0や空欄が集計に入っている: ' + JSON.stringify(w.freshMs));
+  assert.strictEqual(w.freshMs.p50, 8000);
+});
+
 // ---- 古いスポットID(初回の内蔵スポット・端末の控え)からの記録 ----
 test('recordShot: 見つからないスポットIDでも、名前が一致すれば今のスポットに付け替えて保存する。名前も無ければ保存しない', () => {
   const { ctx } = setup();

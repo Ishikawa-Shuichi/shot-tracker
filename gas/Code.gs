@@ -13,7 +13,7 @@ var API_TOKEN = '';
 
 // 本番に「どの版が貼られているか」を確認するための印。貼り付けのたびに日付を更新する。
 // init の返り値(codeVersion)と、ブラウザで /exec を開いたとき(doGet)の version に出る。
-var CODE_VERSION = '2026-10-13a';
+var CODE_VERSION = '2026-10-20a';
 
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
@@ -219,7 +219,8 @@ function recordUsage_(userId, entries) {
   var taken = entries.slice(0, USAGE_MAX_ENTRIES);
   var now = new Date().toISOString();
   var str = function (v, n) { return String(v == null ? '' : v).slice(0, n); };
-  var num = function (v) { var x = Number(v); return isFinite(x) && x >= 0 ? Math.min(Math.round(x), 86400000) : ''; };
+  // null/空は「その回は最新データが届かなかった」を意味するので空欄にする(Number(null)は0になり、起動秒数が0として集計に混ざっていた=2026-10-20に発見)
+  var num = function (v) { if (v == null || v === '') return ''; var x = Number(v); return isFinite(x) && x >= 0 ? Math.min(Math.round(x), 86400000) : ''; };
   var rows = [];
   taken.forEach(function (e) {
     if (!e || typeof e !== 'object' || (e.k !== 'open' && e.k !== 'sum')) return;
@@ -263,7 +264,8 @@ function actionGetUsage_(body) {
     if (r[1] === 'open') {
       w.opens[uid] = (w.opens[uid] || 0) + 1;
     } else if (r[1] === 'sum') {
-      if (r[7] !== '' && r[7] != null) w.freshMs.push(Number(r[7]));
+      // 0は「届かなかった」の誤記録(上のnum()の修正前に溜まった分)なので数えない。実際の起動は0ミリ秒にならない
+      if (r[7] !== '' && r[7] != null && Number(r[7]) > 0) w.freshMs.push(Number(r[7]));
       var calls = {};
       try { calls = JSON.parse(String(r[9] || '{}')); } catch (e) { calls = {}; }
       Object.keys(calls).forEach(function (action) {
