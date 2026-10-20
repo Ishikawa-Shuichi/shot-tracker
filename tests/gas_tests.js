@@ -338,10 +338,33 @@ test('recordShot: 見つからないスポットIDでも、名前が一致すれ
   assert.strictEqual(freshReadShots(ctx).length, before);
 });
 
-// ---- 退部した人(HIDDEN_USER_IDS)を一覧・ランキング・合計・通知から外す(記録データは残す) ----
-test('退部した人: 記録・ライセンス一覧・メンバー・チーム統計・週次/月間ランキング・通知の宛先のどこにも出ず、シートの記録は残る。他の人の集計は変わらない', () => {
-  const { ctx, shots, env } = setup();
-  const H = ctx.HIDDEN_USER_IDS[0];
+// ---- 退会する人(HIDDEN_USERS)を、指定日から一覧・ランキング・合計・通知から外す(記録データは残す) ----
+test('退会日まで: 非表示の指定日の前日は、一覧・集計・通知のすべてに普通に出る(11月いっぱいは残す)', () => {
+  const { ctx, shots } = setupAt('2026-11-30T21:45:00+09:00');
+  const H = Object.keys(ctx.HIDDEN_USERS)[0];
+  assert.strictEqual(ctx.HIDDEN_USERS[H], '2026-12-01');
+  shots.appendRow(['hh1', '2026-11-20T10:00:00.000Z', '2026-11', '2026-11-20', H, '退会予定さん', 's-lc', 5, 10, '']);
+  ctx.getSheet_('KnownUsers').appendRow([H, '退会予定さん', '2026-08-01T00:00:00Z']);
+  ctx.invalidateShotsCache_();
+  assert.strictEqual(ctx.isHiddenUser_(H), false);
+  const s = ctx.getShots_();
+  assert.ok(s.some((x) => x.userId === H), '記録が集計から消えている');
+  assert.ok(ctx.getKnownUsers_().some((m) => m.userId === H));
+  assert.ok(ctx.actionGetAllLicenses_({ userId: A }).licenses.some((m) => m.userId === H), 'ライセンス一覧に出ていない');
+  assert.ok(ctx.broadcastTargets_({ [A]: 'A', [H]: '退会予定さん' }, null).indexOf(H) !== -1, '最終日までは通知も届くべき');
+  assert.strictEqual(ctx.actionGetTeamStats_({ userId: HOST, ym: '2026-11' }).countRanking.find((r) => r.userId === H).attempts, 10);
+});
+
+test('退会日の境目: 11/30 23:59(JST)はまだ表示、12/1 0:01(JST)から非表示。登録のない人は常に表示', () => {
+  const H = Object.keys(setup().ctx.HIDDEN_USERS)[0];
+  assert.strictEqual(setupAt('2026-11-30T23:59:00+09:00').ctx.isHiddenUser_(H), false);
+  assert.strictEqual(setupAt('2026-12-01T00:01:00+09:00').ctx.isHiddenUser_(H), true);
+  assert.strictEqual(setupAt('2026-12-01T00:01:00+09:00').ctx.isHiddenUser_(A), false);
+});
+
+test('退会日(12/1)から: 記録・ライセンス一覧・メンバー・チーム統計・週次/月間ランキング・通知の宛先のどこにも出ず、シートの記録は残る。他の人の集計は変わらない', () => {
+  const { ctx, shots, env } = setupAt('2026-12-02T10:00:00+09:00');
+  const H = Object.keys(ctx.HIDDEN_USERS)[0];
   assert.ok(H, '退部リストが空');
   const range = ctx.festDateRange_();
   shots.appendRow(['h1', '2026-09-03T10:00:00.000Z', '2026-09', '2026-09-03', H, '退部さん', 's-lc', 5, 10, '']);

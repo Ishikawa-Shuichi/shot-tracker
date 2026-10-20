@@ -13,7 +13,7 @@ var API_TOKEN = '';
 
 // 本番に「どの版が貼られているか」を確認するための印。貼り付けのたびに日付を更新する。
 // init の返り値(codeVersion)と、ブラウザで /exec を開いたとき(doGet)の version に出る。
-var CODE_VERSION = '2026-10-20a';
+var CODE_VERSION = '2026-10-20b';
 
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
@@ -26,12 +26,16 @@ var VIEWER_HOST_USER_IDS = [
 function isViewerHost_(userId) { return VIEWER_HOST_USER_IDS.indexOf(String(userId)) !== -1; }
 function isHost_(userId) { return userId === HOST_USER_ID || isViewerHost_(userId); }
 
-// 退部・休会などで、一覧・ランキング・チーム合計・通知から外す人。記録データはシートに残したままにする
-// (ここから消せば、過去の記録も含めて元どおり表示される)。この人が自分でアプリを開いても、自分の記録は空に見える。
-var HIDDEN_USER_IDS = [
-  'Ua58c17d690452c681e3c252e6e4ab163'  // 依田幸樹(2026-10-13 退部)
-];
-function isHiddenUser_(userId) { return HIDDEN_USER_IDS.indexOf(String(userId)) !== -1; }
+// 退部・休会などで、一覧・ランキング・チーム合計・通知から外す人。「ユーザーID: この日から非表示」の形で書く。
+// 記録データはシートに残したままにする(ここから消せば、過去の記録も含めて元どおり表示される)。
+// 指定日になると自動で外れる(その日までは普通に表示・通知される)。外れた人が自分でアプリを開いても、自分の記録は空に見える。
+var HIDDEN_USERS = {
+  'Ua58c17d690452c681e3c252e6e4ab163': '2026-12-01'  // 依田幸樹(11月末で退会 → 12/1から非表示)
+};
+function isHiddenUser_(userId) {
+  var from = HIDDEN_USERS[String(userId)];
+  return !!from && dateOf_(new Date()) >= from;
+}
 
 // 週間MVP自動投稿用: Messaging APIチャネルの「チャネルアクセストークン(長期)」。
 // コード貼り替えで消えないよう、値は「プロジェクトの設定 → スクリプト プロパティ」に
