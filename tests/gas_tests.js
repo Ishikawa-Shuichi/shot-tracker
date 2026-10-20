@@ -338,6 +338,50 @@ test('recordShot: 見つからないスポットIDでも、名前が一致すれ
   assert.strictEqual(freshReadShots(ctx).length, before);
 });
 
+// ---- 選手でもあるホスト(キャプテンの瑛祐): 全員の閲覧・代理記録・修正はできるが、選手として普通に出る。運営向けの情報は見られない ----
+test('選手ホスト: ホスト権限(全員の閲覧・代理記録・他人の記録の修正)があり、他の選手にはそれが無い', () => {
+  const { ctx } = setup();
+  const E = ctx.PLAYER_HOST_USER_IDS[0];
+  assert.ok(E, '選手ホストの登録が空');
+  assert.strictEqual(ctx.isHost_(E), true);
+  assert.strictEqual(ctx.isViewerHost_(E), false, '閲覧専用ホスト扱い(選手として消える)になっている');
+  assert.strictEqual(ctx.isOperator_(E), false);
+  assert.strictEqual(ctx.actionInit_({ userId: E }).isHost, true);
+  // 全員の閲覧
+  assert.ok(ctx.actionGetMyStats_({ userId: E, targetUserId: B, ym: '2026-09' }).total);
+  assert.ok(Array.isArray(ctx.actionGetHistory_({ userId: E, targetUserId: B, limit: 5 }).items));
+  assert.throws(() => ctx.actionGetMyStats_({ userId: A, targetUserId: B, ym: '2026-09' }), /権限/);
+  assert.throws(() => ctx.actionGetHistory_({ userId: A, targetUserId: B, limit: 5 }), /権限/);
+  // 代理記録(Bさんの記録をEが入れる)
+  const res = ctx.actionRecordShot_({ actingUserId: E, userId: B, displayName: 'Bさん', spotId: 's-lc', makes: 4, attempts: 5, date: '2026-09-08', clientId: 'c-proxy-E', viewYm: '2026-09' });
+  assert.strictEqual(res.id, 'c-proxy-E');
+  assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'c-proxy-E').userId, B, '記録の持ち主がBさんになっていない');
+  assert.throws(() => ctx.actionRecordShot_({ actingUserId: A, userId: B, displayName: 'Bさん', spotId: 's-lc', makes: 1, attempts: 1, date: '2026-09-08', clientId: 'c-x' }), /権限/);
+  // 他人の記録の修正
+  ctx.actionUpdateShot_({ shotId: 'r3', actingUserId: E, makes: 9, attempts: 10, viewYm: '2026-09' });
+  assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'r3').makes, 9);
+});
+
+test('選手ホスト: 選手としてライセンス一覧・本数ランキング・LINE通知の宛先に普通に出る(VIEWERのように消えない)', () => {
+  const { ctx, shots } = setup();
+  const E = ctx.PLAYER_HOST_USER_IDS[0];
+  shots.appendRow(['e1', '2026-09-04T10:00:00.000Z', '2026-09', '2026-09-04', E, '瑛祐', 's-lc', 6, 10, '']);
+  ctx.invalidateShotsCache_();
+  assert.ok(ctx.actionGetAllLicenses_({ userId: A }).licenses.some((m) => m.userId === E), 'ライセンス一覧から消えた');
+  assert.ok(ctx.actionGetTeamStats_({ userId: A, ym: '2026-09' }).countRanking.some((r) => r.name === '瑛祐' && r.attempts === 10), 'ランキングから消えた(他の選手から見た画面)');
+  assert.ok(ctx.actionGetTeamStats_({ userId: HOST, ym: '2026-09' }).countRanking.some((r) => r.userId === E), 'ランキングから消えた(ホストから見た画面)');
+  assert.ok(ctx.uniqueMembers_(ctx.getShots_()).some((m) => m.userId === E));
+  assert.ok(ctx.broadcastTargets_({ [A]: 'A', [E]: '瑛祐' }, null).indexOf(E) !== -1, '通知が届かなくなっている');
+});
+
+test('選手ホスト: 運営向けの情報(利用状況・LINEの通数)は見られない。運営(柊一)は見られる', () => {
+  const { ctx } = setup();
+  const E = ctx.PLAYER_HOST_USER_IDS[0];
+  assert.throws(() => ctx.actionGetUsage_({ userId: E }), /運営ホストのみ/);
+  assert.throws(() => ctx.actionGetLineQuota_({ userId: E }), /運営ホストのみ/);
+  assert.ok(Array.isArray(ctx.actionGetUsage_({ userId: HOST }).weeks));
+});
+
 // ---- 退会する人(HIDDEN_USERS)を、指定日から一覧・ランキング・合計・通知から外す(記録データは残す) ----
 test('退会日まで: 非表示の指定日の前日は、一覧・集計・通知のすべてに普通に出る(11月いっぱいは残す)', () => {
   const { ctx, shots } = setupAt('2026-11-30T21:45:00+09:00');

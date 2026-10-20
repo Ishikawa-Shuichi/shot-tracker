@@ -13,7 +13,7 @@ var API_TOKEN = '';
 
 // 本番に「どの版が貼られているか」を確認するための印。貼り付けのたびに日付を更新する。
 // init の返り値(codeVersion)と、ブラウザで /exec を開いたとき(doGet)の version に出る。
-var CODE_VERSION = '2026-10-20b';
+var CODE_VERSION = '2026-10-20c';
 
 // ホストのLINEユーザーID。この人だけ全員のランキング閲覧・代理記録・個人スポットの閲覧ができる。
 var HOST_USER_ID = 'Ub47dc7fc4f136b8bd1551dbb2df86d68';
@@ -24,7 +24,17 @@ var VIEWER_HOST_USER_IDS = [
   'U6649616e07ce4ed757c851dab596e6b8'  // だいちゃん(代表・早川大史)
 ];
 function isViewerHost_(userId) { return VIEWER_HOST_USER_IDS.indexOf(String(userId)) !== -1; }
-function isHost_(userId) { return userId === HOST_USER_ID || isViewerHost_(userId); }
+
+// 選手でもあるホスト(チームのキャプテンなど): 全員の閲覧・代理記録・他の人の記録の修正ができる。
+// ただし選手として、ライセンス一覧・ランキング・LINE通知には普通に出る(VIEWER_HOST_USER_IDSとは別物。あちらは選手として扱わない人)。
+// 運営向けの情報(利用状況・LINEの通数)は見られない: 利用状況は「他のメンバーには表示しない」とプライバシーポリシーに書いているため。
+var PLAYER_HOST_USER_IDS = [
+  'U342acc0dd30e3f3e8969c79d222c0f2a'  // 瑛祐(キャプテン。2026-10-20に、柊一に記録を頼みにくい人の代理記録のためホスト権限を付与)
+];
+function isPlayerHost_(userId) { return PLAYER_HOST_USER_IDS.indexOf(String(userId)) !== -1; }
+function isHost_(userId) { return userId === HOST_USER_ID || isViewerHost_(userId) || isPlayerHost_(userId); }
+// 運営(柊一+閲覧専用ホスト)だけが見られる情報用
+function isOperator_(userId) { return userId === HOST_USER_ID || isViewerHost_(userId); }
 
 // 退部・休会などで、一覧・ランキング・チーム合計・通知から外す人。「ユーザーID: この日から非表示」の形で書く。
 // 記録データはシートに残したままにする(ここから消せば、過去の記録も含めて元どおり表示される)。
@@ -248,7 +258,7 @@ function recordUsage_(userId, entries) {
 // ホスト用: 週ごと(月曜始まり)の「開いた人・開いたのに記録しなかった人・待ち時間」の集計
 function actionGetUsage_(body) {
   var userId = String(body.userId || '');
-  if (!isHost_(userId)) throw new Error('利用状況はホストのみ見られます');
+  if (!isOperator_(userId)) throw new Error('利用状況は運営ホストのみ見られます');
   var weeksBack = Math.max(1, Math.min(12, Number(body.weeks) || 6));
   var rows = getSheet_(SHEET_USAGE).getDataRange().getValues();
   var shots = getShots_();
@@ -2100,7 +2110,7 @@ function registerKnownUser_(userId) {
 // LINE Messaging APIの読み取り専用エンドポイントを叩くだけで、こちらから何かを送信するわけではない。
 // 運営向けの情報(通数の残りは業務上の判断材料であり、選手が見る意味はない)なのでホスト限定にする。
 function actionGetLineQuota_(body) {
-  if (!isHost_(String(body.userId || ''))) throw new Error('この情報の閲覧はホストのみ可能です');
+  if (!isOperator_(String(body.userId || ''))) throw new Error('この情報の閲覧は運営ホストのみ可能です');
   var token = getLineToken_();
   if (!token) throw new Error('LINEチャネルアクセストークンが未設定です');
   var headers = { Authorization: 'Bearer ' + token };
