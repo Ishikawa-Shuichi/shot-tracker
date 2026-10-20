@@ -573,7 +573,7 @@ var LIFF_ID = '2010830232-G909qxQO';          // LINE Developers の LIFF ID
 var GAS_URL = 'https://script.google.com/macros/s/AKfycbzPTkVAbbZZqNdctGd8bi-GVE2MGaTbhLpmOQCqHZ2vyjO4q3ngSM96mB2jZoFmPFpw/exec';          // GASウェブアプリの /exec URL
 var API_TOKEN = '';                           // GAS側 API_TOKEN と一致(未使用なら空)
 // 画面側の版。利用状況の記録に載せて「選手の端末が新しい版を使っているか」を確かめる(GitHub Pagesは反映に時間がかかるため)
-var APP_VERSION = '2026-10-08b';
+var APP_VERSION = '2026-10-20a';
 // 初めて開いた端末(前回の控えが無い)でも、サーバーの返事を待たずに記録を始められるように内蔵している共通スポット。
 // 2026-10-08に本番から読み取った値。サーバーの返事が届いたら本物に置き換わる。
 // スポットを追加・削除しても壊れはしない(サーバーは見つからないIDを名前で今のスポットに付け替える)が、ずれたら更新する
@@ -599,6 +599,7 @@ var state = {
   current: null,     // 記録中スポット
   editingShotId: null, // 編集中の記録ID(nullなら新規記録)
   isHost: false,      // ホスト(全員の記録を見る/代理記録できる)かどうか
+  canProxy: false,    // 他の人の記録を追加できるか。ホストに加え、代理記録だけできる人(成績・履歴は見られない)もtrue
   members: [],        // ホスト用: これまでに記録があるメンバー一覧
   recordingAs: null,   // ホストの代理記録対象 {userId,name}。nullなら自分
   proxyStats: null,    // recordingAs で選んだ人の統計(ホストがコート上で確認できるように)
@@ -1046,6 +1047,7 @@ function applyBootData(d, fromCache){
   if(fromCache && d.myStats) d.myStats.__fromCache = true;
   state.spots = d.spots;
   state.isHost = !!d.isHost;
+  state.canProxy = !!d.isHost || !!d.canProxy; // 他の人の記録を追加できるか(ホスト+代理記録だけできる人)
   state.members = d.members || [];
   state.addScope = state.isHost ? 'shared' : 'personal';
   buildYmOptions(d.ym);
@@ -1096,6 +1098,7 @@ function applyBootstrap(){
   var ym = todayStr().slice(0,7);
   state.spots = BOOTSTRAP_SPOTS.map(function(s){ return Object.assign({}, s, { situations: [] }); });
   state.isHost = false;
+  state.canProxy = false;
   state.members = [];
   buildYmOptions(ym);
   state.ym = ym;
@@ -1335,7 +1338,7 @@ function renderCourt(){
     : state.myStats;
   var my = {}; if(statsSource){ statsSource.spots.forEach(function(s){ my[s.spotId]=s; }); }
   document.getElementById('courtHint').textContent = state.recordingAs
-    ? '「'+state.recordingAs.name+'」さんの成績を表示中・スポットをタップして記録'
+    ? '「'+state.recordingAs.name+'」さんの' + (state.isHost ? '成績を表示中' : '記録として保存されます') + '・スポットをタップして記録'
     : 'スポットをタップして記録（この画面の集計は選択中の月）';
   var pageSpots = currentPageSpots();
   if(!pageSpots.length){
@@ -1709,6 +1712,7 @@ onTap(document.getElementById('recSave'), async function(){
       }
       if(state.recordingAs){ await loadHistory(); await refreshProxyStats(); }
       else{ applyHistory(res.history); }
+      if(state.recordingAs && !state.isHost) toast('✅ ' + state.recordingAs.name + 'さんの記録を保存しました'); // 成績を見られない分、保存できたことをはっきり伝える
       renderCourt();
       // 進み具合(あと◯)は新規獲得が無くても毎回変わる。自分の記録の時だけ反映する(代理記録では相手の値なので使わない)
       if(res.trophyFamilies && res.trophyOwner === state.user.userId) state.trophyFamilies = res.trophyFamilies;
@@ -2568,6 +2572,14 @@ function renderHistoryList(){
 // 控えの履歴はライブ解放の即時判定(predictLiveUnlock)には使わない(古い履歴で判定すると誤って演出が出るため)
 async function loadHistory(){
   var targetId = state.recordingAs ? state.recordingAs.userId : state.user.userId;
+  if(state.recordingAs && !state.isHost){
+    // 代理記録だけできる人は他の人の履歴を見られない(サーバーも拒否する)。この端末で入れた分(送信中・未送信)だけを出す
+    ++tabLoadSeq.hist;
+    document.getElementById('historyTitle').textContent = state.recordingAs.name+'さんの分(この端末で入れた記録だけ表示)';
+    state.historyItems = []; state.historyFresh = false; state.historyLoading = false;
+    renderHistoryList();
+    return;
+  }
   document.getElementById('historyTitle').textContent = state.recordingAs ? state.recordingAs.name+'さんの最近の記録' : '最近の記録';
   var seq = ++tabLoadSeq.hist;
   var cached = readTabCache(histKey(targetId));
@@ -2959,7 +2971,7 @@ function renderTrendChart(points){
 // ================= 代理記録(ホスト限定) =================
 function renderProxyUI(){
   var card = document.getElementById('proxyCard');
-  if(!state.isHost){ card.classList.add('hidden'); return; }
+  if(!state.isHost && !state.canProxy){ card.classList.add('hidden'); return; }
   card.classList.remove('hidden');
   var sel = document.getElementById('proxySel');
   var prev = sel.value;
@@ -2968,7 +2980,9 @@ function renderProxyUI(){
   state.members.filter(function(m){ return m.userId !== state.user.userId; }).forEach(function(m){
     var o=document.createElement('option'); o.value=m.userId; o.textContent=m.name; sel.appendChild(o);
   });
-  var addOpt = document.createElement('option'); addOpt.value='__add__'; addOpt.textContent='+ 新しい人を追加...'; sel.appendChild(addOpt);
+  if(state.isHost){ // 新しい人(代理メンバー)の作成はホストだけ。代理記録だけできる人は、いる人の中から選ぶ
+    var addOpt = document.createElement('option'); addOpt.value='__add__'; addOpt.textContent='+ 新しい人を追加...'; sel.appendChild(addOpt);
+  }
   // 選択状態は state.recordingAs を正とする(「+ 新しい人を追加...」が選択されたままにならないように)
   if(state.recordingAs){ sel.value = state.recordingAs.userId; }
   else if(prev && prev !== '__add__'){ sel.value = prev; }
@@ -3012,13 +3026,15 @@ async function switchProxyTarget(){
 }
 function updateProxyHint(){
   document.getElementById('proxyHint').textContent = state.recordingAs
-    ? '現在「'+state.recordingAs.name+'」さんの記録として保存されます(コートにその人の成績を表示中)'
+    ? '現在「'+state.recordingAs.name+'」さんの記録として保存されます' + (state.isHost ? '(コートにその人の成績を表示中)' : '(その人の成績は表示されません。記録の追加だけできます)')
     : '現在は自分の記録として保存されます';
 }
 // 代理記録中の相手の統計(表示中の月)。前にその人を見たことがあれば控えで即座にコートへ出し、裏で最新化する。
 // 控えのキーはじぶんタブで「その人・月」を見た時と同じなので、どちらで見ても控えが共有される
 async function refreshProxyStats(){
   if(!state.recordingAs){ state.proxyStats = null; state.proxyStatsUserId = null; return; }
+  // 代理記録だけできる人は他の人の成績を見られない(サーバーも拒否する)ので、取りに行かない
+  if(!state.isHost){ state.proxyStats = null; state.proxyStatsUserId = null; return; }
   var freshFor = state.recordingAs.userId;
   var key = 'my_' + [state.user.userId, freshFor, 'month', state.ym || ''].join('_');
   var seq = ++tabLoadSeq.proxy;

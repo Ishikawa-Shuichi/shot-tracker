@@ -338,48 +338,51 @@ test('recordShot: 見つからないスポットIDでも、名前が一致すれ
   assert.strictEqual(freshReadShots(ctx).length, before);
 });
 
-// ---- 選手でもあるホスト(キャプテンの瑛祐): 全員の閲覧・代理記録・修正はできるが、選手として普通に出る。運営向けの情報は見られない ----
-test('選手ホスト: ホスト権限(全員の閲覧・代理記録・他人の記録の修正)があり、他の選手にはそれが無い', () => {
+// ---- 代理記録だけできる人(キャプテンの瑛祐): 他の人の記録を「追加」することだけができる。それ以外のホスト権限は無い ----
+test('代理記録だけできる人: 他の人の記録を追加できる(持ち主は相手)。ほかの選手にはできない。initでcanProxyが分かる', () => {
   const { ctx } = setup();
-  const E = ctx.PLAYER_HOST_USER_IDS[0];
-  assert.ok(E, '選手ホストの登録が空');
-  assert.strictEqual(ctx.isHost_(E), true);
-  assert.strictEqual(ctx.isViewerHost_(E), false, '閲覧専用ホスト扱い(選手として消える)になっている');
-  assert.strictEqual(ctx.isOperator_(E), false);
-  assert.strictEqual(ctx.actionInit_({ userId: E }).isHost, true);
-  // 全員の閲覧
-  assert.ok(ctx.actionGetMyStats_({ userId: E, targetUserId: B, ym: '2026-09' }).total);
-  assert.ok(Array.isArray(ctx.actionGetHistory_({ userId: E, targetUserId: B, limit: 5 }).items));
-  assert.throws(() => ctx.actionGetMyStats_({ userId: A, targetUserId: B, ym: '2026-09' }), /権限/);
-  assert.throws(() => ctx.actionGetHistory_({ userId: A, targetUserId: B, limit: 5 }), /権限/);
-  // 代理記録(Bさんの記録をEが入れる)
+  const E = ctx.RECORDER_USER_IDS[0];
+  assert.ok(E, '代理記録担当の登録が空');
   const res = ctx.actionRecordShot_({ actingUserId: E, userId: B, displayName: 'Bさん', spotId: 's-lc', makes: 4, attempts: 5, date: '2026-09-08', clientId: 'c-proxy-E', viewYm: '2026-09' });
   assert.strictEqual(res.id, 'c-proxy-E');
   assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'c-proxy-E').userId, B, '記録の持ち主がBさんになっていない');
   assert.throws(() => ctx.actionRecordShot_({ actingUserId: A, userId: B, displayName: 'Bさん', spotId: 's-lc', makes: 1, attempts: 1, date: '2026-09-08', clientId: 'c-x' }), /権限/);
-  // 他人の記録の修正
-  ctx.actionUpdateShot_({ shotId: 'r3', actingUserId: E, makes: 9, attempts: 10, viewYm: '2026-09' });
-  assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'r3').makes, 9);
+  const initE = ctx.actionInit_({ userId: E });
+  assert.deepStrictEqual([initE.isHost, initE.canProxy], [false, true]);
+  assert.deepStrictEqual([ctx.actionInit_({ userId: A }).isHost, ctx.actionInit_({ userId: A }).canProxy], [false, false]);
+  assert.deepStrictEqual([ctx.actionInit_({ userId: HOST }).isHost, ctx.actionInit_({ userId: HOST }).canProxy], [true, true]);
 });
 
-test('選手ホスト: 選手としてライセンス一覧・本数ランキング・LINE通知の宛先に普通に出る(VIEWERのように消えない)', () => {
+test('代理記録だけできる人: 追加以外はできない(全員の成績・履歴の閲覧、他人の記録の修正/削除、共通スポットの変更、メンバー作成、運営向けの情報)', () => {
+  const { ctx } = setup();
+  const E = ctx.RECORDER_USER_IDS[0];
+  const before = freshReadShots(ctx).length;
+  assert.throws(() => ctx.actionGetMyStats_({ userId: E, targetUserId: B, ym: '2026-09' }), /権限/, '他人のスタッツが見える');
+  assert.throws(() => ctx.actionGetMyStats_({ userId: E, targetUserId: '__team__', ym: '2026-09' }), /権限/, 'チーム全体の統計が見える');
+  assert.throws(() => ctx.actionGetHistory_({ userId: E, targetUserId: B, limit: 5 }), /権限/, '他人の履歴が見える');
+  assert.throws(() => ctx.actionUpdateShot_({ shotId: 'r3', actingUserId: E, makes: 9, attempts: 10, viewYm: '2026-09' }), /権限/, '他人の記録を修正できる');
+  assert.throws(() => ctx.actionDeleteShot_({ shotId: 'r3', actingUserId: E, viewYm: '2026-09' }), /権限/, '他人の記録を削除できる');
+  assert.strictEqual(freshReadShots(ctx).length, before, '記録が変わった');
+  assert.strictEqual(freshReadShots(ctx).find((x) => x.id === 'r3').makes, 3, 'Bさんの記録が書き換わった');
+  assert.throws(() => ctx.actionAddSpot_({ userId: E, name: '新スポット', x: 10, y: 10, scope: 'shared' }), /ホストのみ/, '共通スポットを追加できる');
+  assert.throws(() => ctx.actionUpdateSpot_({ userId: E, spotId: 's-lc', name: '改名' }), /ホストのみ/, '共通スポットを変更できる');
+  assert.throws(() => ctx.actionDeleteSpot_({ userId: E, spotId: 's-lc' }), /ホストのみ/, '共通スポットを削除できる');
+  assert.throws(() => ctx.actionRegisterMember_({ userId: E, name: '新しい子' }), /ホストのみ/, '代理メンバーを作れる');
+  assert.throws(() => ctx.actionGetUsage_({ userId: E }), /ホストのみ/, '利用状況が見える');
+  assert.throws(() => ctx.actionGetLineQuota_({ userId: E }), /ホストのみ/, 'LINE通数が見える');
+  // 他人(Aさん)のマイスポットはEさんの画面には届かない(Eさん自身の個人スポットは無いので0件)
+  assert.strictEqual(ctx.getSpots_(E).filter((s) => s.scope === 'personal').length, 0, '他人の個人スポットが見える');
+});
+
+test('代理記録だけできる人: 選手として一覧・本数ランキング・LINE通知の宛先に普通に出る', () => {
   const { ctx, shots } = setup();
-  const E = ctx.PLAYER_HOST_USER_IDS[0];
+  const E = ctx.RECORDER_USER_IDS[0];
   shots.appendRow(['e1', '2026-09-04T10:00:00.000Z', '2026-09', '2026-09-04', E, '瑛祐', 's-lc', 6, 10, '']);
   ctx.invalidateShotsCache_();
   assert.ok(ctx.actionGetAllLicenses_({ userId: A }).licenses.some((m) => m.userId === E), 'ライセンス一覧から消えた');
-  assert.ok(ctx.actionGetTeamStats_({ userId: A, ym: '2026-09' }).countRanking.some((r) => r.name === '瑛祐' && r.attempts === 10), 'ランキングから消えた(他の選手から見た画面)');
-  assert.ok(ctx.actionGetTeamStats_({ userId: HOST, ym: '2026-09' }).countRanking.some((r) => r.userId === E), 'ランキングから消えた(ホストから見た画面)');
+  assert.ok(ctx.actionGetTeamStats_({ userId: A, ym: '2026-09' }).countRanking.some((r) => r.name === '瑛祐' && r.attempts === 10), 'ランキングから消えた');
   assert.ok(ctx.uniqueMembers_(ctx.getShots_()).some((m) => m.userId === E));
   assert.ok(ctx.broadcastTargets_({ [A]: 'A', [E]: '瑛祐' }, null).indexOf(E) !== -1, '通知が届かなくなっている');
-});
-
-test('選手ホスト: 運営向けの情報(利用状況・LINEの通数)は見られない。運営(柊一)は見られる', () => {
-  const { ctx } = setup();
-  const E = ctx.PLAYER_HOST_USER_IDS[0];
-  assert.throws(() => ctx.actionGetUsage_({ userId: E }), /運営ホストのみ/);
-  assert.throws(() => ctx.actionGetLineQuota_({ userId: E }), /運営ホストのみ/);
-  assert.ok(Array.isArray(ctx.actionGetUsage_({ userId: HOST }).weeks));
 });
 
 // ---- 退会する人(HIDDEN_USERS)を、指定日から一覧・ランキング・合計・通知から外す(記録データは残す) ----

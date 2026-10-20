@@ -561,6 +561,51 @@ const n = (c, action) => c.calls.filter((x) => x.action === action).length;
     assert.ok(c2.run('usageQueue.length') === 0);
   });
 
+  // ---- 代理記録だけできる人(canProxy): 他の人の記録を追加できるが、その人の成績・履歴は見られない ----
+  const recorderInit = (d) => { d.isHost = false; d.canProxy = true; return d; };
+  const selectProxy = async (c, uid) => { c.el('proxySel').value = uid; await c.fire('proxySel', 'change'); await flush(80); };
+
+  await test('代理記録だけできる人: 「記録対象」が出て(新しい人の追加は無し)、他の人を選んでも成績・履歴を取りに行かない', async () => {
+    const c = await boot({ patchInit: recorderInit });
+    assert.ok(!c.el('proxyCard').classList.contains('hidden'), '記録対象が出ていない');
+    const opts = c.el('proxySel').options.map((o) => o.value);
+    assert.ok(opts.includes(X), '他の人が選べない: ' + JSON.stringify(opts));
+    assert.ok(!opts.includes('__add__'), '代理メンバーの作成が出ている');
+    c.reset();
+    await selectProxy(c, X);
+    assert.strictEqual(n(c, 'getMyStats') + n(c, 'getHistory'), 0, '他人の成績・履歴をサーバーに問い合わせている');
+    assert.ok(/表示されません/.test(c.el('proxyHint').textContent), c.el('proxyHint').textContent);
+    assert.ok(/記録として保存されます/.test(c.el('courtHint').textContent), c.el('courtHint').textContent);
+  });
+
+  await test('代理記録だけできる人: 相手の分として記録を送り(持ち主=相手、操作者=自分)、保存できたことを伝える。成績・履歴は取りに行かない', async () => {
+    const c = await boot({ patchInit: recorderInit });
+    c.handlers.recordShot = (b) => ({ id: b.clientId, myStats: stats(YM, { s1: [4, 10], s2: [6, 10] }), history: JSON.parse(JSON.stringify(HIST)), streak: 2, trophyOwner: b.userId });
+    await selectProxy(c, X);
+    c.reset();
+    c.run("openRecord(state.spots[0], {attempts:5, makes:3})");
+    c.el('recDate').value = '2026-09-25';
+    c.fire('recSave');
+    await flush(200);
+    const sent = c.calls.find((x) => x.action === 'recordShot').body;
+    assert.strictEqual(sent.userId, X);
+    assert.strictEqual(sent.actingUserId, ME);
+    assert.strictEqual(n(c, 'getHistory') + n(c, 'getMyStats'), 0, '保存後に他人の成績・履歴を取りに行っている');
+    assert.ok(/記録を保存しました/.test(c.el('toast').textContent) && /Xさん/.test(c.el('toast').textContent), c.el('toast').textContent);
+    assert.ok(!/保存できませんでした/.test(c.el('toast').textContent));
+  });
+
+  await test('代理記録: 普通の選手には「記録対象」が出ない。ホストには新しい人の追加も出て、相手の成績を取りに行く', async () => {
+    const p = await boot();
+    assert.ok(p.el('proxyCard').classList.contains('hidden'), '普通の選手に出ている');
+    const h = await boot({ isHost: true });
+    assert.ok(!h.el('proxyCard').classList.contains('hidden'));
+    assert.ok(h.el('proxySel').options.some((o) => o.value === '__add__'), 'ホストに「新しい人を追加」が無い');
+    h.reset();
+    await selectProxy(h, X);
+    assert.ok(h.calls.some((x) => x.action === 'getMyStats' && x.body.targetUserId === X), 'ホストが相手の成績を取りに行っていない');
+  });
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })();
